@@ -49,6 +49,12 @@
 
 ## Recently done
 
+- Fixed downloads: only the `.png` was ever saving because the extension
+  triggered all three files via content-script `<a download>` clicks in a
+  row, which Chrome silently blocks after the first ("multiple automatic
+  downloads"). Downloads now go through `chrome.downloads.download()` in
+  the background worker (new `downloads` permission), which isn't subject
+  to that block.
 - Unified the enter-capture-mode and finish-capture hotkeys onto `Shift+1`
   (press once to enter, press again while in capture mode to open the area
   selector and finish).

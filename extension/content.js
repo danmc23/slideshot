@@ -2163,10 +2163,7 @@
     downloadDataUrl(fullPageCanvas.toDataURL("image/png"), baseName + "-full.png");
 
     const notesText = buildNotesText(ts, pageContext, baseName);
-    const blob = new Blob([notesText], { type: "text/plain" });
-    const blobUrl = URL.createObjectURL(blob);
-    downloadDataUrl(blobUrl, baseName + ".txt");
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    downloadDataUrl("data:text/plain;charset=utf-8," + encodeURIComponent(notesText), baseName + ".txt");
 
     cleanUpAfterFinish();
     toast("Screenshot + full-page + notes saved");
@@ -2518,11 +2515,16 @@
   }
 
   function downloadDataUrl(url, filename) {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    try {
+      chrome.runtime.sendMessage({ type: "DOWNLOAD_FILE", url, filename }, (resp) => {
+        if (chrome.runtime.lastError || !resp || resp.error) {
+          console.error("Slideshot: download failed", chrome.runtime.lastError || (resp && resp.error));
+          toast("Download failed for " + filename + " — see console (F12) for details");
+        }
+      });
+    } catch (err) {
+      console.error("Slideshot: download message failed", err);
+      toast("Download failed for " + filename + " — see console (F12) for details");
+    }
   }
 })();

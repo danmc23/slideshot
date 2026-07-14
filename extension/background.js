@@ -17,4 +17,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true; // keep the message channel open for the async callback
   }
+
+  if (msg && msg.type === "DOWNLOAD_FILE") {
+    // Downloading via chrome.downloads (instead of a content-script <a
+    // download> click) avoids Chrome's "multiple automatic downloads"
+    // block, which silently drops the 2nd/3rd file when a page triggers
+    // several downloads back to back.
+    chrome.downloads.download({ url: msg.url, filename: msg.filename, saveAs: false }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ error: chrome.runtime.lastError.message });
+      } else {
+        sendResponse({ downloadId });
+      }
+    });
+    return true;
+  }
 });
