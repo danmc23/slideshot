@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Slideshot",
+  "version": "1.1.0",
+  "description": "Hotkey-driven screenshot annotation tool: draw-your-own capture area with snapping, small/key-field/zoom highlights with collision-checked callouts, draggable number badges, Ctrl+Z undo, and a matching full-page striped-highlight export for Claude Project ingestion.",
+  "permissions": ["tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
