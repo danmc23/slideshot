@@ -2,24 +2,30 @@
 
 ## High priority
 
-- **Titles aren't reliably making it into the notes file.** `guessTitle()` is
-  called at annotation creation and stores a best-effort title, but it often
-  comes back empty (no `aria-label`, no `title` attribute, no matching
-  `<label>`, not a table cell, no placeholder, or text too long) — so unless
-  the user also opens the describe panel (`Shift+J`) and the title gets
-  re-saved there, a highlight can end up with no title at all in the output.
-  This applies to every marked item — small/key/zoom highlights and context
-  tags — not just described ones. Fix: make sure whatever was auto-detected
-  (or manually entered) is always emitted in the `.txt` file for anything the
-  user flagged, regardless of whether they added a description, since the
-  downstream Claude Project relies on titles to interpret meaning for slide
-  text generation.
+- **`guessTitle()` heuristic is still weak.** Every highlight now always
+  emits a `Title:` line in the notes output (falls back to "(untitled — no
+  label detected)" instead of being silently omitted — see Recently done),
+  but the underlying auto-detection itself still often comes back empty (no
+  `aria-label`, no `title` attribute, no matching `<label>`, not a table
+  cell, no placeholder, or text too long). Worth revisiting the heuristic
+  itself at some point, separate from the output-formatting fix.
 - **Browser testing pass.** No in-browser testing has been done on anything
-  from v0.8.0 through the current build — all changes were syntax-checked
-  only. Load unpacked, test every hotkey and interaction end to end.
-- **Wire text annotation (`Shift+T`) dragging** into the bubble adjustment
-  phase so text boxes can be repositioned before capture (currently only
-  zoom-callout bubbles are draggable there).
+  from v0.8.0 through the current build (including this round's callout
+  tool, dropdown-flag tool, session/voice recording, popup, and PDF/zip
+  export) — all changes were syntax/structure-checked only (including a
+  byte-level structural validation of the PDF/ZIP writers), never loaded in
+  an actual browser. Load unpacked, test every hotkey and interaction end to
+  end before relying on this for real work.
+- **Callouts/text labels have no drag-to-reposition step before capture.**
+  The old "bubble adjustment" phase (drag zoom-callout bubbles before the
+  final capture) was removed entirely when zoom highlights were replaced
+  with the arrow+textbox callout tool, since callouts don't need
+  collision-avoidance the way magnified bubbles did. That also means the
+  previous plan to wire `Shift+T` text-label dragging into that phase is now
+  moot — there's currently no drag-to-reposition step for callouts or text
+  labels at all; they're placed at a fixed default offset from the target
+  element. Worth adding a lightweight reposition step if the default
+  placement proves awkward in practice.
 
 ## Medium priority
 
@@ -49,6 +55,39 @@
 
 ## Recently done
 
+- **Session recording + voice narration + combined export.** `Ctrl+Shift+E`
+  starts/stops a session (stored in `chrome.storage.local`); every finished
+  capture made while a session is recording is added as a step
+  automatically (existing per-capture downloads still happen too — this is
+  additive, not a replacement). While recording, an offscreen document runs
+  continuous Web Speech API speech-to-text (no raw audio is ever stored,
+  only transcript text with timestamps) — first use opens a one-time tab to
+  grant microphone access, since offscreen documents can't show permission
+  prompts themselves. A new popup (toolbar icon) shows session status/step
+  list and Start/Stop/Discard/Export controls. Export builds one PDF page
+  per step (screenshot + highlight refs/titles/descriptions + narration,
+  time-window-aligned to each step), auto-splitting into multiple PDF parts
+  if a part would near Claude's 30MB per-file upload limit, and bundles the
+  PDF part(s) + a combined `session-notes.md` + the raw per-step PNGs into
+  one zip download. The PDF writer and ZIP writer are both hand-rolled
+  (no dependencies) and were structurally validated (byte-level xref/zip
+  parsing) outside the browser, but not yet opened in a real PDF viewer or
+  browser — see the browser-testing-pass item above.
+- **Dropdown-flag tool (`Shift+D`).** Hovering an open dropdown and pressing
+  it immediately screenshots the viewport (before any mouse movement can
+  close the dropdown), then lets you drag a crop box over that now-frozen
+  image to pull out just the dropdown as its own small PNG, correlated to a
+  marker on the main capture via a `Ref: H-<id>` in the notes. Only works
+  for dropdowns that are real page DOM elements (custom/ARIA menus) — native
+  `<select>` popups render outside the page's pixels and can't be
+  screenshotted by any Chrome extension.
+- **Replaced the zoom/magnify highlight with an arrow+textbox callout tool**
+  (still on `Shift+H`). Requires entering text before the highlight is
+  created (cancelling discards it). Removed all the old
+  magnification/bubble-collision/bubble-adjustment code along with it.
+- **Every highlight now gets a stable `Ref: H-<id>`** in the notes output,
+  independent of its optional visual number bubble, plus a guaranteed
+  `Title:` line (see the `guessTitle()` item above for the remaining gap).
 - Fixed downloads: only the `.png` was ever saving because the extension
   triggered all three files via content-script `<a download>` clicks in a
   row, which Chrome silently blocks after the first ("multiple automatic

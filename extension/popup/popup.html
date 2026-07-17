@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Slideshot</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div id="hc-popup">
+      <h1>Slideshot</h1>
+      <div id="hc-status">Loading…</div>
+      <ul id="hc-steps"></ul>
+      <div id="hc-actions">
+        <button id="hc-toggle-btn" type="button">Start session</button>
+        <button id="hc-discard-btn" type="button" disabled>Discard</button>
+        <button id="hc-export-btn" type="button" disabled>Export (.zip)</button>
+      </div>
+      <div id="hc-progress"></div>
+      <div id="hc-hint">Ctrl+Shift+E starts/stops a session from any page. Each Shift+1 capture made while recording is added as a step.</div>
+    </div>
+    <script src="../lib/zip.js"></script>
+    <script src="../lib/pdf.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

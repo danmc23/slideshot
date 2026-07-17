@@ -6,7 +6,9 @@
 //                    capture-area selector, then screenshot + PNG (+ full-page PNG) + .txt
 // Shift+G         -> queue a small red-box highlight on the hovered element
 // Ctrl+Shift+G    -> queue a jagged-outline "key field" highlight on the hovered element
-// Shift+H         -> queue a "zoom callout" highlight on the hovered element
+// Shift+H         -> queue a callout: text box + arrow pointing at the hovered element
+// Shift+D         -> flag the hovered (open) dropdown; captures it separately so
+//                    it survives, then crop just that region out of the frozen shot
 // Shift+J         -> describe the highlight under the cursor (title + notes)
 // Shift+K         -> add a "top-level" overview note for the whole capture
 // Shift+N         -> toggle number mode (then press 0-9 over a highlight to tag it)
@@ -28,14 +30,11 @@
 //   tries offset-left first, falling back if that would collide with another
 //   highlight.
 // - Badges are always drawn in a pass strictly after all highlight shapes
-//   are drawn, and zoom-callout magnified crops are taken from the original
-//   screenshot image (not the canvas being drawn on), so neither badges nor
-//   other highlights' outlines can leak into a magnified zoom bubble.
+//   are drawn.
 // - Repeating the same hotkey on the same element toggles it off (removes the
 //   highlight or context tag) instead of creating a duplicate.
-// - After confirming the capture area, if there are zoom highlights, a
-//   "bubble adjustment" phase lets you drag each magnified callout to a new
-//   position before the final capture.
+// - A callout (Shift+H) requires text before it's created -- cancelling the
+//   text prompt discards it rather than leaving an empty marker.
 
 (function () {
   let captureMode = false;
@@ -67,15 +66,13 @@
   // --- badge drag state ---
   let draggingBadge = null; // annotation currently being repositioned, or null
 
-  // --- bubble adjustment state (post-area-selection, pre-capture) ---
-  let adjustingBubbles = false;
-  let bubblePreviewEls = []; // [{ annotation, boxEl }]
-  let bubbleLinesSvg = null;
-  let bubbleToolbarEl = null;
-  let draggingBubble = null; // { annotation, offsetX, offsetY } or null
-  let savedFinalRect = null;
+  // --- dropdown-flag capture state (separate small screenshot of an open
+  // dropdown, correlated to a highlight marker on the main capture) ---
+  let dropdownCapture = null; // { dataUrl, targetEl, naturalWidth, naturalHeight } while cropping, else null
+  let dropdownOverlayEl = null;
+  let dropdownDrawStart = null;
+  let dropdownDrawBox = null;
 
-  const ZOOM_FACTOR = 2.2;
   const SNAP_PX = 10;
   const ANCHORS = ["nw", "n", "ne", "e", "se", "s", "sw", "w", "offset-left", "offset-right"];
 
@@ -134,7 +131,7 @@
   document.addEventListener(
     "mousemove",
     (e) => {
-      if (!draggingBadge || selectingArea || adjustingBubbles) return;
+      if (!draggingBadge || selectingArea) return;
       const a = draggingBadge;
       if (!a.el || !a.el.isConnected) return;
       const r = a.el.getBoundingClientRect();
@@ -152,29 +149,6 @@
         draggingBadge.badgeEl.classList.remove("hc-dragging");
       }
       draggingBadge = null;
-    },
-    true
-  );
-
-  // --- bubble adjustment drag (reposition zoom callout bubbles) ---
-  document.addEventListener(
-    "mousemove",
-    (e) => {
-      if (!draggingBubble) return;
-      const a = draggingBubble.annotation;
-      const placement = getZoomBubblePlacement(a);
-      const newLeft = e.clientX - draggingBubble.offsetX;
-      const newTop = e.clientY - draggingBubble.offsetY;
-      a.bubbleOverride = { left: newLeft, top: newTop, width: placement.width, height: placement.height };
-      updateBubblePreview(a);
-    },
-    true
-  );
-  document.addEventListener(
-    "mouseup",
-    () => {
-      if (!draggingBubble) return;
-      draggingBubble = null;
     },
     true
   );
@@ -217,17 +191,14 @@
       return;
     }
 
-    if (adjustingBubbles) {
-      if (e.key === "Enter" || e.key === "y" || e.key === "Y") {
+    if (dropdownCapture) {
+      if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        acceptBubbleAdjustment();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        cancelBubbleAdjustment();
+        cancelDropdownCropSelect();
+        toast("Dropdown capture cancelled");
       }
-      return; // swallow everything else while adjusting bubbles
+      return;
     }
 
     const code = e.code;
@@ -273,8 +244,15 @@
     if (shift && !ctrl && code === "KeyH") {
       e.preventDefault();
       e.stopPropagation();
-      if (manualDrawMode) beginManualDraw("big");
-      else queueAnnotation("big");
+      if (manualDrawMode) beginManualDraw("callout");
+      else queueCalloutFlow();
+      return;
+    }
+
+    if (shift && !ctrl && code === "KeyD") {
+      e.preventDefault();
+      e.stopPropagation();
+      handleDropdownFlag();
       return;
     }
 
@@ -422,7 +400,6 @@
       title: a.title,
       description: a.description,
       numberAnchor: a.numberAnchor || null,
-      bubbleOverride: a.bubbleOverride ? { ...a.bubbleOverride } : null,
       color: a.color,
       badgeColor: a.badgeColor,
       textLabel: a.textLabel ? { ...a.textLabel } : null,
@@ -479,7 +456,7 @@
       if (existing.badgeEl) existing.badgeEl.remove();
       annotations = annotations.filter((a) => a !== existing);
       updateBadge();
-      const label = type === "small" ? "Small" : type === "key" ? "Key field" : "Zoom";
+      const label = type === "small" ? "Small" : "Key field";
       toast(label + " highlight removed");
       return;
     }
@@ -493,7 +470,6 @@
       title: guessTitle(el),
       description: "",
       numberAnchor: null,
-      bubbleOverride: null, // { left, top, width, height } in viewport px, or null for auto
       color: safetyStripeActive ? "safety" : currentHighlightColor,
       badgeColor: currentBadgeColor,
       textLabel: null, // { text, left, top } or null
@@ -505,8 +481,228 @@
     createPersistentOverlay(annotation);
     flashConfirm(rect, type);
     updateBadge();
-    const label = type === "small" ? "Small" : type === "key" ? "Key field" : "Zoom";
+    const label = type === "small" ? "Small" : "Key field";
     toast(label + " highlight queued");
+  }
+
+  // --- callout: text box + arrow, requires text before it's created ---
+  function queueCalloutFlow() {
+    const el = document.elementFromPoint(mouseX, mouseY);
+    if (!el) {
+      toast("Nothing under the cursor to mark");
+      return;
+    }
+    const existing = annotations.find((a) => a.el === el && a.type === "callout");
+    if (existing) {
+      pushHistory();
+      if (existing.overlayEl) existing.overlayEl.remove();
+      if (existing.badgeEl) existing.badgeEl.remove();
+      if (existing.textLabelEl) existing.textLabelEl.remove();
+      annotations = annotations.filter((a) => a !== existing);
+      updateBadge();
+      toast("Callout removed");
+      return;
+    }
+    createCalloutViaPanel(el, el.getBoundingClientRect());
+  }
+
+  function createCalloutViaPanel(el, rect) {
+    const annotation = {
+      id: ++annotationIdCounter,
+      type: "callout",
+      el,
+      number: null,
+      title: guessTitle(el),
+      description: "",
+      numberAnchor: null,
+      color: safetyStripeActive ? "safety" : currentHighlightColor,
+      badgeColor: currentBadgeColor,
+      textLabel: null,
+      textLabelEl: null,
+      overlayEl: null,
+      badgeEl: null,
+    };
+    showTextPanel({
+      heading: "Callout text",
+      hideTitleField: true,
+      descValue: "",
+      onSave: (_title, desc) => {
+        const text = desc.trim();
+        if (!text) {
+          toast("Callout needs text — highlight not created");
+          return;
+        }
+        pushHistory();
+        annotation.textLabel = { text, left: rect.right + 30, top: rect.top - 10 };
+        annotations.push(annotation);
+        createPersistentOverlay(annotation);
+        createTextLabelOverlay(annotation);
+        flashConfirm(rect, "callout");
+        updateBadge();
+        toast("Callout added");
+      },
+      onCancel: () => toast("Callout cancelled"),
+    });
+  }
+
+  // =========================================================================
+  // Shift+D: dropdown flag -- native hover dropdowns close the instant the
+  // mouse moves toward our own UI, so we screenshot the viewport immediately
+  // (before any interaction), then let the user crop just that region out of
+  // the already-frozen image rather than the live (possibly-closed) page.
+  // =========================================================================
+
+  function handleDropdownFlag() {
+    const el = document.elementFromPoint(mouseX, mouseY);
+    if (!el) {
+      toast("Hover the open dropdown, then press Shift+D");
+      return;
+    }
+    toast("Capturing dropdown…");
+    try {
+      chrome.runtime.sendMessage({ type: "CAPTURE_TAB" }, (resp) => {
+        if (chrome.runtime.lastError || !resp || resp.error) {
+          const msg = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || "unknown error";
+          toast("Dropdown capture failed: " + msg);
+          return;
+        }
+        beginDropdownCropSelect(resp.dataUrl, el);
+      });
+    } catch (err) {
+      console.error("Slideshot: dropdown capture message failed", err);
+      toast("Extension connection lost — refresh this page (F5) and try again");
+    }
+  }
+
+  function beginDropdownCropSelect(dataUrl, targetEl) {
+    const img = new Image();
+    img.onload = () => {
+      dropdownCapture = { dataUrl, targetEl, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight };
+      dropdownOverlayEl = document.createElement("div");
+      dropdownOverlayEl.id = "hc-dropdown-overlay";
+      const imgEl = document.createElement("img");
+      imgEl.id = "hc-dropdown-img";
+      imgEl.src = dataUrl;
+      dropdownOverlayEl.appendChild(imgEl);
+      document.body.appendChild(dropdownOverlayEl);
+      document.addEventListener("mousedown", onDropdownDrawDown, true);
+      toast("Drag a box around the dropdown, then release • Esc to cancel");
+    };
+    img.onerror = () => toast("Could not load dropdown capture");
+    img.src = dataUrl;
+  }
+
+  function onDropdownDrawDown(e) {
+    if (!dropdownCapture) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dropdownDrawStart = { x: e.clientX, y: e.clientY };
+    dropdownDrawBox = document.createElement("div");
+    dropdownDrawBox.className = "hc-manual-draw-box";
+    dropdownOverlayEl.appendChild(dropdownDrawBox);
+    document.addEventListener("mousemove", onDropdownDrawMove, true);
+    document.addEventListener("mouseup", onDropdownDrawUp, true);
+  }
+
+  function onDropdownDrawMove(e) {
+    if (!dropdownDrawStart || !dropdownDrawBox) return;
+    const left = Math.min(dropdownDrawStart.x, e.clientX);
+    const top = Math.min(dropdownDrawStart.y, e.clientY);
+    const w = Math.abs(e.clientX - dropdownDrawStart.x);
+    const h = Math.abs(e.clientY - dropdownDrawStart.y);
+    dropdownDrawBox.style.left = left + "px";
+    dropdownDrawBox.style.top = top + "px";
+    dropdownDrawBox.style.width = w + "px";
+    dropdownDrawBox.style.height = h + "px";
+  }
+
+  function onDropdownDrawUp(e) {
+    document.removeEventListener("mousemove", onDropdownDrawMove, true);
+    document.removeEventListener("mouseup", onDropdownDrawUp, true);
+    document.removeEventListener("mousedown", onDropdownDrawDown, true);
+    if (!dropdownDrawStart || !dropdownCapture) {
+      cancelDropdownCropSelect();
+      return;
+    }
+    const left = Math.min(dropdownDrawStart.x, e.clientX);
+    const top = Math.min(dropdownDrawStart.y, e.clientY);
+    const w = Math.abs(e.clientX - dropdownDrawStart.x);
+    const h = Math.abs(e.clientY - dropdownDrawStart.y);
+    if (w < 10 || h < 10) {
+      toast("Selection too small — dropdown capture cancelled");
+      cancelDropdownCropSelect();
+      return;
+    }
+    finishDropdownCrop({ left, top, width: w, height: h });
+  }
+
+  function cancelDropdownCropSelect() {
+    document.removeEventListener("mousemove", onDropdownDrawMove, true);
+    document.removeEventListener("mouseup", onDropdownDrawUp, true);
+    document.removeEventListener("mousedown", onDropdownDrawDown, true);
+    if (dropdownDrawBox) {
+      dropdownDrawBox.remove();
+      dropdownDrawBox = null;
+    }
+    if (dropdownOverlayEl) {
+      dropdownOverlayEl.remove();
+      dropdownOverlayEl = null;
+    }
+    dropdownCapture = null;
+    dropdownDrawStart = null;
+  }
+
+  function finishDropdownCrop(rectViewport) {
+    const capture = dropdownCapture;
+    const scale = capture.naturalWidth / window.innerWidth;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(rectViewport.width * scale));
+      canvas.height = Math.max(1, Math.round(rectViewport.height * scale));
+      canvas
+        .getContext("2d")
+        .drawImage(
+          img,
+          rectViewport.left * scale,
+          rectViewport.top * scale,
+          rectViewport.width * scale,
+          rectViewport.height * scale,
+          0,
+          0,
+          canvas.width,
+          canvas.height
+        );
+      createDropdownAnnotation(capture.targetEl, canvas.toDataURL("image/png"));
+      cancelDropdownCropSelect();
+      toast("Dropdown capture added");
+    };
+    img.src = capture.dataUrl;
+  }
+
+  function createDropdownAnnotation(el, croppedDataUrl) {
+    const rect = el.getBoundingClientRect();
+    pushHistory();
+    const annotation = {
+      id: ++annotationIdCounter,
+      type: "dropdown",
+      el,
+      number: null,
+      title: guessTitle(el),
+      description: "",
+      numberAnchor: null,
+      color: safetyStripeActive ? "safety" : currentHighlightColor,
+      badgeColor: currentBadgeColor,
+      textLabel: null,
+      textLabelEl: null,
+      overlayEl: null,
+      badgeEl: null,
+      dropdownImage: croppedDataUrl,
+    };
+    annotations.push(annotation);
+    createPersistentOverlay(annotation);
+    flashConfirm(rect, "dropdown");
+    updateBadge();
   }
 
   function assignNumber(n) {
@@ -660,7 +856,7 @@
 
   function beginManualDraw(type) {
     manualDrawPending = { type };
-    toast("Click and drag to draw a " + (type === "key" ? "key field" : type === "big" ? "zoom" : "small") + " highlight box • Esc to cancel");
+    toast("Click and drag to draw a " + (type === "key" ? "key field" : type === "callout" ? "callout" : "small") + " highlight box • Esc to cancel");
     document.addEventListener("mousedown", onManualDrawDown, true);
   }
 
@@ -724,6 +920,12 @@
     manualDrawStart = null;
 
     const el = createManualAnchor(rect);
+
+    if (type === "callout") {
+      createCalloutViaPanel(el, rect);
+      return;
+    }
+
     pushHistory();
     const annotation = {
       id: ++annotationIdCounter,
@@ -733,7 +935,6 @@
       title: "",
       description: "",
       numberAnchor: null,
-      bubbleOverride: null,
       color: safetyStripeActive ? "safety" : currentHighlightColor,
       badgeColor: currentBadgeColor,
       textLabel: null,
@@ -745,7 +946,7 @@
     createPersistentOverlay(annotation);
     flashConfirm(rect, type);
     updateBadge();
-    const label = type === "small" ? "Small" : type === "key" ? "Key field" : "Zoom";
+    const label = type === "small" ? "Small" : "Key field";
     toast(label + " manual highlight created");
   }
 
@@ -983,7 +1184,8 @@
 
   function flashConfirm(rect, type) {
     const box = document.createElement("div");
-    const cls = type === "small" ? "hc-small" : type === "big" ? "hc-big" : type === "key" ? "hc-key" : "hc-context";
+    const cls =
+      type === "small" ? "hc-small" : type === "callout" ? "hc-big" : type === "key" ? "hc-key" : type === "dropdown" ? "hc-key" : "hc-context";
     box.className = "hc-flash-box " + cls;
     box.style.left = rect.x + "px";
     box.style.top = rect.y + "px";
@@ -1017,15 +1219,15 @@
 
   // Extended instructions shown on hover over the info icon.
   const EXTENDED_INSTRUCTIONS =
-    "HIGHLIGHTS: Shift+G (small), Ctrl+Shift+G (key field / jagged), Shift+H (zoom callout)\n\n" +
+    "HIGHLIGHTS: Shift+G (small), Ctrl+Shift+G (key field / jagged), Shift+H (callout — text box + arrow, requires text)\n" +
+    "Shift+D flags an open dropdown: captures the viewport instantly (so the dropdown survives), then drag a box to crop just that region into its own file.\n\n" +
     "DESCRIBE: Hover a highlight then Shift+J for title+notes. Bullets: start with '- ', Tab/Shift+Tab to indent.\n\n" +
     "NUMBERS: Shift+N toggles number mode, then 0-9 over a highlight to tag it. Drag the badge to reposition.\n\n" +
     "CONTEXT: Shift+C auto-captures a label+snippet from the hovered element.\n\n" +
     "OVERVIEW: Shift+K for a top-level note not tied to one highlight.\n\n" +
     "TOGGLE OFF: Repeat the same hotkey on the same element to remove it.\n\n" +
     "CAPTURE: Press Shift+1 again (while in capture mode) to open area selection. Drag to draw, handles to resize.\n" +
-    "Edges snap to page elements (hold Ctrl to override). Y or Enter to accept.\n" +
-    "If there are zoom highlights, you can drag their callout bubbles before the final capture.\n\n" +
+    "Edges snap to page elements (hold Ctrl to override). Y or Enter to accept.\n\n" +
     "COLORS: Use the left column to change highlight color, right column for badge/number color.\n" +
     "Click the triangle icon for a safety-stripe (yellow/black hazard) highlight mode.\n\n" +
     "OUTPUT: Cropped PNG + full-page PNG + .txt notes file, all sharing one base name.";
@@ -1198,7 +1400,8 @@
       : [
           ["Shift+G", "small highlight"],
           ["Ctrl+Shift+G", "key field highlight"],
-          ["Shift+H", "zoom highlight"],
+          ["Shift+H", "callout (text + arrow)"],
+          ["Shift+D", "dropdown flag (separate capture)"],
           ["Shift+J", "describe highlight"],
           ["Shift+K", "overview note"],
           ["Shift+N", "number mode"],
@@ -1263,7 +1466,7 @@
 
   // --- freeze page during capture mode: block clicks on the underlying page ---
   function onFreezeBlock(e) {
-    if (selectingArea || adjustingBubbles || manualDrawPending) return;
+    if (selectingArea || manualDrawPending || dropdownCapture) return;
     if (e.target && isOwnControlElement(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1312,7 +1515,7 @@
   }
 
   // --- text entry panel (Shift+J, Shift+K, capture naming) ---
-  function showTextPanel({ heading, titleValue, descValue, hideTitleField, hideDescField, titlePlaceholder, onSave }) {
+  function showTextPanel({ heading, titleValue, descValue, hideTitleField, hideDescField, titlePlaceholder, onSave, onCancel }) {
     const existing = document.getElementById("hc-panel-overlay");
     if (existing) existing.remove();
 
@@ -1371,8 +1574,13 @@
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
-    const closePanel = () => overlay.remove();
+    let saved = false;
+    const closePanel = () => {
+      overlay.remove();
+      if (!saved && onCancel) onCancel();
+    };
     const doSave = () => {
+      saved = true;
       onSave(titleInput ? titleInput.value : "", descInput ? descInput.value : "");
       closePanel();
     };
@@ -1473,7 +1681,7 @@
     return !!(
       el.closest &&
       el.closest(
-        "#hc-select-box, .hc-handle, #hc-select-toolbar, #hc-badge, .hc-toast, #hc-panel-overlay, #hc-enter-flash, .hc-flash-box, .hc-persist-box, .hc-persist-badge, .hc-bubble-preview, .hc-bubble-lines-svg, .hc-text-label, .hc-manual-draw-box, .hc-manual-anchor"
+        "#hc-select-box, .hc-handle, #hc-select-toolbar, #hc-badge, .hc-toast, #hc-panel-overlay, #hc-enter-flash, .hc-flash-box, .hc-persist-box, .hc-persist-badge, .hc-text-label, .hc-manual-draw-box, .hc-manual-anchor"
       )
     );
   }
@@ -1744,134 +1952,6 @@
     toast("Area selection cancelled — press Shift+1 to try again");
   }
 
-  // =========================================================================
-  // Zoom-callout collision detection: before actually capturing, check
-  // whether any zoom highlight's magnified bubble would overlap another
-  // highlight, another zoom bubble, or spill outside the chosen crop area --
-  // and if so, ask the person to fix it rather than silently exporting a bad
-  // screenshot.
-  // =========================================================================
-
-  // Same placement logic used for the real canvas draw, but computed in
-  // viewport (CSS px) coordinates so it can be checked against other live
-  // elements and the crop rectangle before any pixels are ever captured.
-  function computeZoomBubblePlacement(rect, zoomFactor) {
-    const zw = Math.min(rect.width * zoomFactor, window.innerWidth * 0.5);
-    const zh = zw * (rect.height / rect.width);
-    let bx = rect.left + rect.width + 24;
-    let by = rect.top;
-    if (bx + zw > window.innerWidth) bx = rect.left - zw - 24;
-    if (bx < 0) bx = Math.max(10, window.innerWidth - zw - 10);
-    if (by + zh > window.innerHeight) by = window.innerHeight - zh - 10;
-    if (by < 0) by = 10;
-    return { left: bx, top: by, width: zw, height: zh };
-  }
-
-  // Returns the bubble placement for a zoom annotation, using the user's
-  // manual override if one exists, or the automatic placement otherwise.
-  function getZoomBubblePlacement(annotation) {
-    if (annotation.bubbleOverride) return annotation.bubbleOverride;
-    if (!annotation.el || !annotation.el.isConnected) return { left: 0, top: 0, width: 100, height: 50 };
-    return computeZoomBubblePlacement(annotation.el.getBoundingClientRect(), ZOOM_FACTOR);
-  }
-
-  function findZoomCollisions(cropRectViewport) {
-    const cropBox = {
-      left: cropRectViewport.left,
-      top: cropRectViewport.top,
-      right: cropRectViewport.left + cropRectViewport.width,
-      bottom: cropRectViewport.top + cropRectViewport.height,
-    };
-    const zoomAnns = annotations.filter((a) => a.type === "big" && a.el && a.el.isConnected);
-    const others = annotations
-      .filter((a) => a.el && a.el.isConnected)
-      .map((a) => ({ el: a.el, rect: a.el.getBoundingClientRect() }));
-    const placedBubbles = [];
-    const problems = [];
-
-    zoomAnns.forEach((a) => {
-      const r = a.el.getBoundingClientRect();
-      const bubble = getZoomBubblePlacement(a);
-      const bubbleBox = { left: bubble.left, top: bubble.top, right: bubble.left + bubble.width, bottom: bubble.top + bubble.height };
-
-      const outsideCrop =
-        bubbleBox.left < cropBox.left || bubbleBox.top < cropBox.top || bubbleBox.right > cropBox.right || bubbleBox.bottom > cropBox.bottom;
-      const overlapsOther = others.some((o) => o.el !== a.el && rectsOverlap(bubbleBox, o.rect));
-      const overlapsPlaced = placedBubbles.some((p) => rectsOverlap(bubbleBox, p));
-
-      if (outsideCrop || overlapsOther || overlapsPlaced) {
-        problems.push({ annotation: a, outsideCrop, overlapsOther, overlapsPlaced });
-      }
-      placedBubbles.push(bubbleBox);
-    });
-
-    return problems;
-  }
-
-  function showZoomCollisionPrompt(problems, onProceedAnyway) {
-    const existing = document.getElementById("hc-panel-overlay");
-    if (existing) existing.remove();
-
-    const overlay = document.createElement("div");
-    overlay.id = "hc-panel-overlay";
-    const panel = document.createElement("div");
-    panel.id = "hc-panel";
-
-    const heading = document.createElement("div");
-    heading.className = "hc-panel-heading";
-    heading.textContent = "Zoom callout placement issue";
-    panel.appendChild(heading);
-
-    const body = document.createElement("div");
-    body.className = "hc-panel-body";
-    problems.forEach((p) => {
-      const label = p.annotation.number != null ? "Highlight #" + p.annotation.number : "An unlabeled zoom highlight";
-      const reasons = [];
-      if (p.outsideCrop) reasons.push("would extend outside the captured area");
-      if (p.overlapsOther) reasons.push("would overlap another highlight");
-      if (p.overlapsPlaced) reasons.push("would overlap another zoom callout");
-      const line = document.createElement("div");
-      line.textContent = label + "'s magnified callout " + reasons.join(" and ") + ".";
-      body.appendChild(line);
-    });
-    panel.appendChild(body);
-
-    const actions = document.createElement("div");
-    actions.className = "hc-panel-actions";
-    const fixBtn = document.createElement("button");
-    fixBtn.type = "button";
-    fixBtn.className = "hc-panel-cancel";
-    fixBtn.textContent = "Let me fix it";
-    const proceedBtn = document.createElement("button");
-    proceedBtn.type = "button";
-    proceedBtn.className = "hc-panel-save";
-    proceedBtn.textContent = "Capture anyway";
-    actions.appendChild(fixBtn);
-    actions.appendChild(proceedBtn);
-    panel.appendChild(actions);
-
-    const hint = document.createElement("div");
-    hint.className = "hc-panel-hint";
-    hint.textContent = "Resize the capture area, reposition a highlight, or remove the zoom highlight, then press Shift+1 again.";
-    panel.appendChild(hint);
-
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-
-    const close = () => overlay.remove();
-    fixBtn.addEventListener("click", () => {
-      close();
-      toast("Adjust and press Shift+1 again");
-    });
-    proceedBtn.addEventListener("click", () => {
-      close();
-      onProceedAnyway();
-    });
-    overlay.addEventListener("mousedown", (e) => {
-      if (e.target === overlay) close();
-    });
-  }
-
   function acceptSelection() {
     if (!selectRect) {
       toast("Draw an area first");
@@ -1879,143 +1959,7 @@
     }
     const finalRect = { ...selectRect };
     endAreaSelection();
-
-    // If there are zoom highlights, let the user adjust their bubble
-    // positions before capturing. Otherwise go straight to capture.
-    const zoomAnns = annotations.filter((a) => a.type === "big" && a.el && a.el.isConnected);
-    if (zoomAnns.length) {
-      beginBubbleAdjustment(finalRect);
-    } else {
-      proceedToCaptureWithCollisionCheck(finalRect);
-    }
-  }
-
-  function proceedToCaptureWithCollisionCheck(finalRect) {
-    const problems = findZoomCollisions(finalRect);
-    if (problems.length) {
-      showZoomCollisionPrompt(problems, () => proceedToCapture(finalRect));
-      return;
-    }
     proceedToCapture(finalRect);
-  }
-
-  // =========================================================================
-  // Bubble adjustment phase: after area selection is confirmed and before
-  // capture, show draggable previews of each zoom highlight's magnified
-  // bubble so the user can reposition them. Enter → capture, Esc → cancel.
-  // =========================================================================
-
-  function beginBubbleAdjustment(finalRect) {
-    adjustingBubbles = true;
-    savedFinalRect = finalRect;
-
-    // Create SVG overlay for connecting lines
-    bubbleLinesSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    bubbleLinesSvg.setAttribute("class", "hc-bubble-lines-svg");
-    bubbleLinesSvg.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483001;pointer-events:none;";
-    document.body.appendChild(bubbleLinesSvg);
-
-    // Create preview boxes for each zoom highlight
-    bubblePreviewEls = [];
-    annotations.forEach((a) => {
-      if (a.type !== "big" || !a.el || !a.el.isConnected) return;
-      const placement = getZoomBubblePlacement(a);
-
-      // Draggable bubble preview box
-      const boxEl = document.createElement("div");
-      boxEl.className = "hc-bubble-preview";
-      boxEl.style.left = placement.left + "px";
-      boxEl.style.top = placement.top + "px";
-      boxEl.style.width = placement.width + "px";
-      boxEl.style.height = placement.height + "px";
-      if (a.number != null) boxEl.textContent = "#" + a.number;
-      document.body.appendChild(boxEl);
-
-      boxEl.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        draggingBubble = {
-          annotation: a,
-          offsetX: e.clientX - parseFloat(boxEl.style.left),
-          offsetY: e.clientY - parseFloat(boxEl.style.top),
-        };
-      });
-
-      // SVG connecting line
-      const lineEl = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      lineEl.setAttribute("stroke", "#ff3b30");
-      lineEl.setAttribute("stroke-width", "1.5");
-      lineEl.setAttribute("stroke-dasharray", "4,3");
-      bubbleLinesSvg.appendChild(lineEl);
-
-      bubblePreviewEls.push({ annotation: a, boxEl, lineEl });
-      updateBubblePreview(a);
-    });
-
-    // Toolbar
-    bubbleToolbarEl = document.createElement("div");
-    bubbleToolbarEl.id = "hc-select-toolbar";
-    bubbleToolbarEl.innerHTML =
-      '<button type="button" class="hc-accept-btn">Capture</button>' +
-      '<button type="button" class="hc-startover-btn">Back to marking</button>' +
-      '<span class="hc-select-hint">Drag zoom callout bubbles to reposition • Enter/Esc</span>';
-    document.body.appendChild(bubbleToolbarEl);
-    bubbleToolbarEl.querySelector(".hc-accept-btn").addEventListener("click", acceptBubbleAdjustment);
-    bubbleToolbarEl.querySelector(".hc-startover-btn").addEventListener("click", cancelBubbleAdjustment);
-
-    toast("Drag zoom callout bubbles to adjust, then press Enter or Capture");
-  }
-
-  function updateBubblePreview(annotation) {
-    const entry = bubblePreviewEls.find((e) => e.annotation === annotation);
-    if (!entry) return;
-    const placement = getZoomBubblePlacement(annotation);
-    entry.boxEl.style.left = placement.left + "px";
-    entry.boxEl.style.top = placement.top + "px";
-    entry.boxEl.style.width = placement.width + "px";
-    entry.boxEl.style.height = placement.height + "px";
-
-    // Update connecting line from highlight center to bubble center
-    if (annotation.el && annotation.el.isConnected) {
-      const r = annotation.el.getBoundingClientRect();
-      entry.lineEl.setAttribute("x1", r.left + r.width);
-      entry.lineEl.setAttribute("y1", r.top + r.height / 2);
-      entry.lineEl.setAttribute("x2", placement.left);
-      entry.lineEl.setAttribute("y2", placement.top + placement.height / 2);
-    }
-  }
-
-  function endBubbleAdjustment() {
-    adjustingBubbles = false;
-    draggingBubble = null;
-    savedFinalRect = null;
-    bubblePreviewEls.forEach((e) => {
-      e.boxEl.remove();
-    });
-    bubblePreviewEls = [];
-    if (bubbleLinesSvg) {
-      bubbleLinesSvg.remove();
-      bubbleLinesSvg = null;
-    }
-    if (bubbleToolbarEl) {
-      bubbleToolbarEl.remove();
-      bubbleToolbarEl = null;
-    }
-  }
-
-  function acceptBubbleAdjustment() {
-    const finalRect = savedFinalRect;
-    endBubbleAdjustment();
-    proceedToCaptureWithCollisionCheck(finalRect);
-  }
-
-  function cancelBubbleAdjustment() {
-    // Clear any overrides that were set during this adjustment session
-    annotations.forEach((a) => {
-      if (a.type === "big") a.bubbleOverride = null;
-    });
-    endBubbleAdjustment();
-    toast("Back to capture mode — press Shift+1 to try again");
   }
 
   function proceedToCapture(finalRect) {
@@ -2098,15 +2042,12 @@
         drawSmallHighlight(ctx, sx, sy, sw, sh, scale, hlColor);
       } else if (a.type === "key") {
         drawKeyFieldHighlight(ctx, sx, sy, sw, sh, scale, hlColor);
+      } else if (a.type === "dropdown") {
+        drawDropdownFlagHighlight(ctx, sx, sy, sw, sh, scale, hlColor);
+      } else if (striped) {
+        drawStripedRect(ctx, sx, sy, sw, sh, scale, hlColor);
       } else {
-        const bubble = getZoomBubblePlacement(a);
-        const bubbleCanvasRect = {
-          left: bubble.left * scale,
-          top: bubble.top * scale,
-          width: bubble.width * scale,
-          height: bubble.height * scale,
-        };
-        drawZoomCallout(ctx, img, sx, sy, sw, sh, scale, bubbleCanvasRect, striped, hlColor);
+        drawDashedRect(ctx, sx, sy, sw, sh, scale, hlColor);
       }
       geometry.push({ a, r });
     });
@@ -2162,11 +2103,54 @@
     downloadDataUrl(outCanvas.toDataURL("image/png"), baseName + ".png");
     downloadDataUrl(fullPageCanvas.toDataURL("image/png"), baseName + "-full.png");
 
-    const notesText = buildNotesText(ts, pageContext, baseName);
+    const dropdownFiles = {}; // annotation.id -> filename, for notes cross-referencing
+    annotations.forEach((a) => {
+      if (!a.dropdownImage) return;
+      const fname = baseName + "-dropdown-H" + a.id + ".png";
+      downloadDataUrl(a.dropdownImage, fname);
+      dropdownFiles[a.id] = fname;
+    });
+
+    const notesText = buildNotesText(ts, pageContext, baseName, dropdownFiles);
     downloadDataUrl("data:text/plain;charset=utf-8," + encodeURIComponent(notesText), baseName + ".txt");
+
+    addCaptureToSessionIfRecording({
+      timestamp: Date.now(),
+      baseName,
+      pageUrl: pageContext.url,
+      pageTitle: pageContext.title,
+      croppedImage: outCanvas.toDataURL("image/png"),
+      fullImage: fullPageCanvas.toDataURL("image/png"),
+      notesText,
+      dropdownImages: annotations
+        .filter((a) => a.dropdownImage)
+        .map((a) => ({ ref: "H-" + a.id, dataUrl: a.dropdownImage, filename: dropdownFiles[a.id] })),
+    });
 
     cleanUpAfterFinish();
     toast("Screenshot + full-page + notes saved");
+  }
+
+  // Feeds a finished capture into the active session as a new step, if one
+  // is recording. Fire-and-forget: background.js no-ops when there's no
+  // active session, so this is safe to call unconditionally after every
+  // capture, session or no session.
+  let sessionStepIdCounter = 0;
+  function addCaptureToSessionIfRecording(capture) {
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "SESSION_ADD_STEP",
+          step: { id: "st_" + Date.now() + "_" + ++sessionStepIdCounter, ...capture },
+        },
+        () => {
+          void chrome.runtime.lastError; // no active session / no listener -- expected, not an error
+        }
+      );
+    } catch (err) {
+      // Extension context can be gone (e.g. page navigated mid-capture) --
+      // the capture's own files already downloaded above, so this is fine.
+    }
   }
 
   function slugify(text) {
@@ -2202,7 +2186,7 @@
 
   // A visually distinct "key field" marker: a jagged zigzag outline that
   // stands out sharply from the smooth solid border of small highlights and
-  // the dashed border of zoom highlights.
+  // the dashed border of callout highlights.
   function drawKeyFieldHighlight(ctx, x, y, w, h, scale, color) {
     const lw = Math.max(2.5, 2.5 * scale);
     const tooth = Math.max(5, 5 * scale);
@@ -2245,6 +2229,17 @@
 
     ctx.closePath();
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // Dropdown-flag marker: a dotted box distinguishing it from small (solid),
+  // key (jagged), and callout (dashed) highlight styles.
+  function drawDropdownFlagHighlight(ctx, x, y, w, h, scale, color) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(3, 3 * scale);
+    ctx.setLineDash([Math.max(2, 2 * scale), Math.max(3, 3 * scale)]);
+    ctx.strokeRect(x, y, w, h);
     ctx.restore();
   }
 
@@ -2300,35 +2295,6 @@
     ctx.lineDashOffset = dashLen;
     ctx.strokeRect(x, y, w, h);
     ctx.restore();
-  }
-
-  function drawZoomCallout(ctx, sourceImg, x, y, w, h, scale, bubbleCanvasRect, striped, color) {
-    if (striped) drawStripedRect(ctx, x, y, w, h, scale, color);
-    else drawDashedRect(ctx, x, y, w, h, scale, color);
-
-    const bx = bubbleCanvasRect.left;
-    const by = bubbleCanvasRect.top;
-    const zw = bubbleCanvasRect.width;
-    const zh = bubbleCanvasRect.height;
-
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1.5, 1.5 * scale);
-    ctx.beginPath();
-    ctx.moveTo(x + w, y + h / 2);
-    ctx.lineTo(bx, by + zh / 2);
-    ctx.stroke();
-    ctx.restore();
-
-    ctx.save();
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(bx - 6, by - 6, zw + 12, zh + 12);
-    ctx.restore();
-
-    if (striped) drawStripedRect(ctx, bx - 6, by - 6, zw + 12, zh + 12, scale, color);
-    else drawDashedRect(ctx, bx - 6, by - 6, zw + 12, zh + 12, scale, color);
-
-    ctx.drawImage(sourceImg, x, y, w, h, bx, by, zw, zh);
   }
 
   function drawBadgesAtAnchor(ctx, rectViewport, anchor, scale, items, badgeColor) {
@@ -2446,7 +2412,7 @@
     }
   }
 
-  function buildNotesText(tsLabel, pageContext, baseName) {
+  function buildNotesText(tsLabel, pageContext, baseName, dropdownFiles) {
     const lines = [];
 
     lines.push("# Capture: " + (captureName || "(untitled)"));
@@ -2490,10 +2456,15 @@
       const unnumbered = annotations.filter((a) => a.number == null);
       [...numbered, ...unnumbered].forEach((a, idx) => {
         const label = a.number != null ? "Highlight #" + a.number : "Highlight (unlabeled " + (idx + 1) + ")";
-        const kind = a.type === "small" ? "small highlight" : a.type === "key" ? "key field highlight" : "zoom highlight";
+        const kind =
+          a.type === "small" ? "small highlight" : a.type === "key" ? "key field highlight" : a.type === "dropdown" ? "dropdown flag" : "callout";
         lines.push("### " + label + " — " + kind);
-        if (a.title) lines.push("Title: " + a.title);
+        lines.push("Ref: H-" + a.id);
+        lines.push("Title: " + (a.title || "(untitled — no label detected)"));
         lines.push(...formatMultilineField("Description:", a.description));
+        if (dropdownFiles && dropdownFiles[a.id]) {
+          lines.push("Dropdown capture: " + dropdownFiles[a.id]);
+        }
         if (a.number != null || a.description) {
           const ctxLines = contextLinesFor(a);
           if (ctxLines.length) lines.push(...ctxLines);

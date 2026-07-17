@@ -468,28 +468,6 @@
   text-align: right;
 }
 
-/* Zoom-callout bubble preview (shown during bubble adjustment phase) */
-.hc-bubble-preview {
-  position: fixed;
-  z-index: 2147483002;
-  background: rgba(255, 255, 255, 0.85);
-  border: 2px dashed #ff3b30;
-  border-radius: 4px;
-  cursor: grab;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ff3b30;
-  font: 600 14px/1 -apple-system, "Segoe UI", Roboto, sans-serif;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-
-.hc-bubble-preview:active {
-  cursor: grabbing;
-  opacity: 0.9;
-}
-
 /* Text annotation label (Shift+T) */
 .hc-text-label {
   position: fixed;
@@ -543,4 +521,27 @@
 .hc-manual-anchor {
   z-index: -1;
   opacity: 0;
+}
+
+/* Dropdown-flag crop overlay: shows the just-captured (already-frozen)
+   screenshot full-viewport so the user can drag a box around the dropdown
+   without worrying about it having closed on the live page underneath. */
+#hc-dropdown-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 2147483005;
+  cursor: crosshair;
+}
+
+#hc-dropdown-img {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  pointer-events: none;
 }
