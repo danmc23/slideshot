@@ -16,17 +16,6 @@
   byte-level structural validation of the PDF/ZIP writers), never loaded in
   an actual browser. Load unpacked, test every hotkey and interaction end to
   end before relying on this for real work.
-- **Callouts/text labels have no drag-to-reposition step before capture.**
-  The old "bubble adjustment" phase (drag zoom-callout bubbles before the
-  final capture) was removed entirely when zoom highlights were replaced
-  with the arrow+textbox callout tool, since callouts don't need
-  collision-avoidance the way magnified bubbles did. That also means the
-  previous plan to wire `Shift+T` text-label dragging into that phase is now
-  moot — there's currently no drag-to-reposition step for callouts or text
-  labels at all; they're placed at a fixed default offset from the target
-  element. Worth adding a lightweight reposition step if the default
-  placement proves awkward in practice.
-
 ## Medium priority
 
 - Update `extension/README.md` further as features change (color system,
@@ -55,6 +44,33 @@
 
 ## Recently done
 
+- **Draggable callout/text-annotation arrow anchor.** Drag a callout or
+  Shift+T text-annotation box and its arrow now snaps to the same 10 preset
+  anchor points (corners, side-centers, offset-left/right) used for number/
+  context badges, instead of always pointing at the target element's dead
+  center. (Also fixed a real bug found along the way: `.hc-text-label` had
+  `pointer-events: none`, so it couldn't have received a drag in the first
+  place, and `cloneAnnotationsForHistory()` was dropping `dropdownImage` and
+  the new `textLabelAnchor` field on every Ctrl+Z undo/redo.)
+- **PDF export no longer truncates a step's text.** `addImagePage` used to
+  draw all of a step's wrapped notes/narration text starting right below
+  the image with no page-break logic — text that didn't fit just ran off
+  the bottom of the page and was never visible. The PDF writer now has
+  `addCapturePages()`, which fits as much text as it can below the image(s)
+  on the first page and continues onto additional text-only pages (using
+  nearly the full page height) until everything fits, however many pages
+  that takes.
+- **Dropdown crop images are now included in the PDF**, stacked with the
+  main highlighted screenshot on the same page (not just in the zip's raw
+  PNGs as before), via the same `addCapturePages()` change above.
+- **Dropdown highlighting now visually links the two images.** The
+  dropdown-flag marker on the main capture and a matching border baked
+  directly onto the separate crop image now share one dashed style (was a
+  small dotted pattern before, and the crop image had no border at all).
+  The marker also now outlines the exact crop area the user drew (i.e. what
+  the dropdown actually occupied) rather than just the small trigger
+  element originally under the cursor, while still guessing the title from
+  that original trigger element.
 - **Fixed dropdown-flag timing for good, plus a proper cancel/exit and
   suppressed duplicate downloads during a session.** `Shift+D` now works
   standalone (even before `Shift+1`) and defers every visual side effect

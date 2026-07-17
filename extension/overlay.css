@@ -468,7 +468,8 @@
   text-align: right;
 }
 
-/* Text annotation label (Shift+T) */
+/* Text annotation label (Shift+T / callouts) -- draggable to reposition and
+   to choose which of the 10 badge-style anchor points the arrow points at */
 .hc-text-label {
   position: fixed;
   z-index: 2147483646;
@@ -481,7 +482,12 @@
   max-width: 200px;
   white-space: pre-wrap;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
-  pointer-events: none;
+  cursor: grab;
+}
+
+.hc-text-label.hc-dragging {
+  opacity: 0.85;
+  box-shadow: 0 0 0 2px #007aff;
 }
 
 /* Manual draw mode icon */

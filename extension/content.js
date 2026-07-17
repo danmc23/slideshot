@@ -74,6 +74,9 @@
   // --- badge drag state ---
   let draggingBadge = null; // annotation currently being repositioned, or null
 
+  // --- text-label / callout arrow drag state ---
+  let draggingTextLabel = null; // { annotation, offsetX, offsetY } or null
+
   // --- dropdown-flag capture state (separate small screenshot of an open
   // dropdown, correlated to a highlight marker on the main capture) ---
   let dropdownCapture = null; // { dataUrl, targetEl, naturalWidth, naturalHeight } while cropping, else null
@@ -157,6 +160,35 @@
         draggingBadge.badgeEl.classList.remove("hc-dragging");
       }
       draggingBadge = null;
+    },
+    true
+  );
+
+  // --- text-label drag (reposition the callout box; the arrow's anchor on
+  // the target element snaps to the same 10 preset points badges use) ---
+  document.addEventListener(
+    "mousemove",
+    (e) => {
+      if (!draggingTextLabel || selectingArea) return;
+      const a = draggingTextLabel.annotation;
+      if (!a.el || !a.el.isConnected || !a.textLabel) return;
+      a.textLabel.left = e.clientX - draggingTextLabel.offsetX;
+      a.textLabel.top = e.clientY - draggingTextLabel.offsetY;
+      const r = a.el.getBoundingClientRect();
+      a.textLabelAnchor = nearestAnchor(r, e.clientX, e.clientY);
+      positionTextLabelEl(a);
+    },
+    true
+  );
+  document.addEventListener(
+    "mouseup",
+    () => {
+      if (!draggingTextLabel) return;
+      if (draggingTextLabel.annotation.textLabelEl) {
+        draggingTextLabel.annotation.textLabelEl.style.cursor = "grab";
+        draggingTextLabel.annotation.textLabelEl.classList.remove("hc-dragging");
+      }
+      draggingTextLabel = null;
     },
     true
   );
@@ -613,6 +645,8 @@
       color: a.color,
       badgeColor: a.badgeColor,
       textLabel: a.textLabel ? { ...a.textLabel } : null,
+      textLabelAnchor: a.textLabelAnchor || null,
+      dropdownImage: a.dropdownImage || null,
     }));
   }
 
@@ -744,12 +778,13 @@
         }
         pushHistory();
         annotation.textLabel = { text, left: rect.right + 30, top: rect.top - 10 };
+        annotation.textLabelAnchor = "e";
         annotations.push(annotation);
         createPersistentOverlay(annotation);
         createTextLabelOverlay(annotation);
         flashConfirm(rect, "callout");
         updateBadge();
-        toast("Callout added");
+        toast("Callout added — drag its box to aim the arrow at a different point");
       },
       onCancel: () => toast("Callout cancelled"),
     });
@@ -879,27 +914,38 @@
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(rectViewport.width * scale));
       canvas.height = Math.max(1, Math.round(rectViewport.height * scale));
-      canvas
-        .getContext("2d")
-        .drawImage(
-          img,
-          rectViewport.left * scale,
-          rectViewport.top * scale,
-          rectViewport.width * scale,
-          rectViewport.height * scale,
-          0,
-          0,
-          canvas.width,
-          canvas.height
-        );
-      createDropdownAnnotation(capture.targetEl, canvas.toDataURL("image/png"));
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(
+        img,
+        rectViewport.left * scale,
+        rectViewport.top * scale,
+        rectViewport.width * scale,
+        rectViewport.height * scale,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+      // Bake the same dashed border onto the crop itself that marks its
+      // source area on the main capture, so the two are obviously linked
+      // when viewed side by side.
+      const borderColor = safetyStripeActive ? "#ffd700" : currentHighlightColor;
+      drawDropdownCropBorder(ctx, canvas.width, canvas.height, scale, borderColor);
+
+      // Mark the exact area the dropdown occupied (the crop box just drawn)
+      // rather than just the small trigger element originally under the
+      // cursor -- the trigger might not reflect the expanded menu's extent.
+      // Its title is still worth guessing from the original trigger element
+      // though, since the manual anchor itself has no attributes to read.
+      const anchorEl = createManualAnchor(rectViewport);
+      createDropdownAnnotation(anchorEl, canvas.toDataURL("image/png"), guessTitle(capture.targetEl));
       cancelDropdownCropSelect();
       toast("Dropdown capture added");
     };
     img.src = capture.dataUrl;
   }
 
-  function createDropdownAnnotation(el, croppedDataUrl) {
+  function createDropdownAnnotation(el, croppedDataUrl, titleOverride) {
     const rect = el.getBoundingClientRect();
     pushHistory();
     const annotation = {
@@ -907,7 +953,7 @@
       type: "dropdown",
       el,
       number: null,
-      title: guessTitle(el),
+      title: titleOverride || guessTitle(el),
       description: "",
       numberAnchor: null,
       color: safetyStripeActive ? "safety" : currentHighlightColor,
@@ -1055,8 +1101,9 @@
           left: r.right + 30,
           top: r.top - 10,
         };
+        annotation.textLabelAnchor = "e";
         createTextLabelOverlay(annotation);
-        toast("Text annotation added — drag to reposition during bubble adjustment");
+        toast("Text annotation added — drag its box to aim the arrow at a different point");
       },
     });
   }
@@ -1071,6 +1118,27 @@
     el.style.top = annotation.textLabel.top + "px";
     document.body.appendChild(el);
     annotation.textLabelEl = el;
+
+    el.addEventListener("mousedown", (e) => {
+      if (selectingArea) return;
+      e.preventDefault();
+      e.stopPropagation();
+      draggingTextLabel = {
+        annotation,
+        offsetX: e.clientX - annotation.textLabel.left,
+        offsetY: e.clientY - annotation.textLabel.top,
+      };
+      el.style.cursor = "grabbing";
+      el.classList.add("hc-dragging");
+    });
+  }
+
+  // Lightweight reposition during a drag -- avoids remove()/recreate on
+  // every mousemove the way createTextLabelOverlay does.
+  function positionTextLabelEl(annotation) {
+    if (!annotation.textLabelEl || !annotation.textLabel) return;
+    annotation.textLabelEl.style.left = annotation.textLabel.left + "px";
+    annotation.textLabelEl.style.top = annotation.textLabel.top + "px";
   }
 
   // =========================================================================
@@ -1447,10 +1515,11 @@
   // Extended instructions shown on hover over the info icon.
   const EXTENDED_INSTRUCTIONS =
     "HIGHLIGHTS: Shift+G (small), Ctrl+Shift+G (key field / jagged), Shift+H (callout — text box + arrow, requires text)\n" +
-    "Shift+D flags an open dropdown -- works even before Shift+1, with no visual change until the screenshot is safely taken, then drag a box to crop just that region into its own file.\n\n" +
+    "Shift+D flags an open dropdown -- works even before Shift+1, with no visual change until the screenshot is safely taken, then drag a box to crop just that region into its own file. A dashed border marks the same area on the main capture and is baked onto the crop image too, so the two are obviously linked.\n\n" +
     "Escape cancels capture mode entirely with no output (only outside area-select/manual-draw/dropdown-crop, which have their own Escape).\n\n" +
     "DESCRIBE: Hover a highlight then Shift+J for title+notes. Bullets: start with '- ', Tab/Shift+Tab to indent.\n\n" +
     "NUMBERS: Shift+N toggles number mode, then 0-9 over a highlight to tag it. Drag the badge to reposition.\n\n" +
+    "TEXT/CALLOUT ARROWS: Drag a callout or text-annotation box to move it and aim its arrow at any of the same 10 anchor points badges use.\n\n" +
     "CONTEXT: Shift+C auto-captures a label+snippet from the hovered element.\n\n" +
     "OVERVIEW: Shift+K for a top-level note not tied to one highlight.\n\n" +
     "TOGGLE OFF: Repeat the same hotkey on the same element to remove it.\n\n" +
@@ -2292,7 +2361,7 @@
       }
       // Text annotation with pointer arrow
       if (a.textLabel) {
-        drawTextLabel(ctx, r, a.textLabel, scale, a.color === "safety" ? "#ffd700" : (a.color || "#ff3b30"));
+        drawTextLabel(ctx, r, a.textLabel, scale, a.color === "safety" ? "#ffd700" : (a.color || "#ff3b30"), a.textLabelAnchor);
       }
     });
 
@@ -2481,12 +2550,29 @@
 
   // Dropdown-flag marker: a dotted box distinguishing it from small (solid),
   // key (jagged), and callout (dashed) highlight styles.
+  // Dash pattern shared with drawDropdownCropBorder() below, so the marker
+  // on the main capture and the border baked onto the separate dropdown
+  // crop image are obviously the same thing when viewed side by side.
+  const DROPDOWN_DASH = (scale) => [Math.max(10, 10 * scale), Math.max(6, 6 * scale)];
+
   function drawDropdownFlagHighlight(ctx, x, y, w, h, scale, color) {
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(3, 3 * scale);
-    ctx.setLineDash([Math.max(2, 2 * scale), Math.max(3, 3 * scale)]);
+    ctx.lineWidth = Math.max(3.5, 3.5 * scale);
+    ctx.setLineDash(DROPDOWN_DASH(scale));
     ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+  }
+
+  // Baked onto the small dropdown crop image itself (not just drawn live on
+  // the main capture), inset so the dashed line isn't clipped at the edge.
+  function drawDropdownCropBorder(ctx, w, h, scale, color) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(3.5, 3.5 * scale);
+    ctx.setLineDash(DROPDOWN_DASH(scale));
+    const inset = ctx.lineWidth / 2;
+    ctx.strokeRect(inset, inset, Math.max(0, w - inset * 2), Math.max(0, h - inset * 2));
     ctx.restore();
   }
 
@@ -2587,7 +2673,7 @@
   }
 
   // Draw a text label with an arrow pointing to the annotation element.
-  function drawTextLabel(ctx, rectViewport, label, scale, color) {
+  function drawTextLabel(ctx, rectViewport, label, scale, color, anchor) {
     const bx = label.left * scale;
     const by = label.top * scale;
     const fontSize = Math.max(12, 12 * scale);
@@ -2600,9 +2686,11 @@
     const boxW = maxW + pad * 2;
     const boxH = lines.length * lineH + pad * 2;
 
-    // Arrow from element center to text box
-    const ex = (rectViewport.left + rectViewport.width / 2) * scale;
-    const ey = (rectViewport.top + rectViewport.height / 2) * scale;
+    // Arrow from the chosen anchor point on the target element (same 10
+    // preset points used for number/context badges) to the text box.
+    const anchorPt = anchorPoint(rectViewport, anchor || "e");
+    const ex = anchorPt.x * scale;
+    const ey = anchorPt.y * scale;
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(1.5, 1.5 * scale);
     ctx.beginPath();

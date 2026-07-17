@@ -69,31 +69,77 @@ function createPdfBuilder() {
   // Adds one page: a JPEG image scaled to fit the top ~60% of the page,
   // with wrapped text lines below it. jpegBytes must be a Uint8Array of a
   // raw JPEG file (e.g. from a data: URL after stripping the base64 header).
-  function addImagePage(jpegBytes, imgWidthPx, imgHeightPx, textLines) {
-    const imgObjNum = reserveObject();
-    const usableW = PAGE_W - MARGIN * 2;
-    const maxImgH = PAGE_H * 0.6;
-    let drawW = usableW;
-    let drawH = imgWidthPx > 0 ? drawW * (imgHeightPx / imgWidthPx) : 0;
-    if (drawH > maxImgH) {
-      drawH = maxImgH;
-      drawW = imgHeightPx > 0 ? drawH * (imgWidthPx / imgHeightPx) : usableW;
-    }
-    const imgX = MARGIN + (usableW - drawW) / 2;
-    const imgY = PAGE_H - MARGIN - drawH;
+  function buildTextBlock(lines, fontSize, leading, top) {
+    let s = "BT\n/F1 " + fontSize + " Tf\n" + leading + " TL\n" + MARGIN + " " + top.toFixed(2) + " Td\n";
+    lines.forEach((line, i) => {
+      if (i > 0) s += "T*\n";
+      s += "(" + escapeText(line) + ") Tj\n";
+    });
+    s += "ET\n";
+    return s;
+  }
 
-    setObject(imgObjNum, [
-      imgObjNum +
-        " 0 obj\n<< /Type /XObject /Subtype /Image /Width " +
-        imgWidthPx +
-        " /Height " +
-        imgHeightPx +
-        " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " +
-        jpegBytes.length +
-        " >>\nstream\n",
-      jpegBytes,
-      "\nendstream\nendobj\n",
+  // A plain text-only page (no image), used for narration/notes overflow
+  // that didn't fit below the image on the page it belongs with -- nearly
+  // the full page height is available for text here instead of just the
+  // space left below an image.
+  function addTextOnlyPage(lines, fontSize, leading) {
+    const top = PAGE_H - MARGIN;
+    const streamBytes = new TextEncoder().encode(buildTextBlock(lines, fontSize, leading, top));
+
+    const contentObjNum = reserveObject();
+    setObject(contentObjNum, [contentObjNum + " 0 obj\n<< /Length " + streamBytes.length + " >>\nstream\n", streamBytes, "\nendstream\nendobj\n"]);
+
+    const pageObjNum = reserveObject();
+    setObject(pageObjNum, [
+      pageObjNum +
+        " 0 obj\n<< /Type /Page /Parent PAGES_REF /MediaBox [0 0 " +
+        PAGE_W +
+        " " +
+        PAGE_H +
+        "] /Resources << /Font << /F1 FONT_REF >> >> /Contents " +
+        contentObjNum +
+        " 0 R >>\nendobj\n",
     ]);
+    pageObjNums.push(pageObjNum);
+  }
+
+  // Adds one or more images (e.g. the main screenshot plus any dropdown
+  // crops for that step) to a single page, laid out top-to-bottom, followed
+  // by wrapped text lines below the last image. If the text doesn't fit in
+  // the remaining space, it continues onto additional text-only pages
+  // instead of being cut off.
+  function addCapturePages(images, textLines) {
+    const usableW = PAGE_W - MARGIN * 2;
+    const maxTotalImgH = PAGE_H * 0.68;
+
+    // Scale every image to the same width, capping total stacked height.
+    const naturalTotalH = images.reduce((sum, im) => sum + (im.width > 0 ? usableW * (im.height / im.width) : 0), 0);
+    const shrink = naturalTotalH > maxTotalImgH ? maxTotalImgH / naturalTotalH : 1;
+
+    const placements = [];
+    let cursorY = PAGE_H - MARGIN;
+    images.forEach((im) => {
+      const drawW = usableW * shrink;
+      const drawH = im.width > 0 ? drawW * (im.height / im.width) : 0;
+      const imgObjNum = reserveObject();
+      setObject(imgObjNum, [
+        imgObjNum +
+          " 0 obj\n<< /Type /XObject /Subtype /Image /Width " +
+          im.width +
+          " /Height " +
+          im.height +
+          " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " +
+          im.jpegBytes.length +
+          " >>\nstream\n",
+        im.jpegBytes,
+        "\nendstream\nendobj\n",
+      ]);
+      const imgX = MARGIN + (usableW - drawW) / 2;
+      const imgY = cursorY - drawH;
+      placements.push({ imgObjNum, imgX, imgY, drawW, drawH });
+      cursorY = imgY - 10;
+    });
 
     const wrapped = [];
     (textLines || []).forEach((block) => {
@@ -103,17 +149,20 @@ function createPdfBuilder() {
 
     const fontSize = 9;
     const leading = 12;
-    const textTop = imgY - 20;
+    const textTop = cursorY - 10;
 
-    let stream = "q\n";
-    stream +=
-      drawW.toFixed(2) + " 0 0 " + drawH.toFixed(2) + " " + imgX.toFixed(2) + " " + imgY.toFixed(2) + " cm /Im" + imgObjNum + " Do\n";
-    stream += "Q\nBT\n/F1 " + fontSize + " Tf\n" + leading + " TL\n" + MARGIN + " " + textTop.toFixed(2) + " Td\n";
-    wrapped.forEach((line, i) => {
-      if (i > 0) stream += "T*\n";
-      stream += "(" + escapeText(line) + ") Tj\n";
+    const firstPageMaxLines = Math.max(1, Math.floor((textTop - MARGIN) / leading));
+    const contPageMaxLines = Math.max(1, Math.floor((PAGE_H - MARGIN * 2) / leading));
+    const firstPageLines = wrapped.slice(0, firstPageMaxLines);
+    let remaining = wrapped.slice(firstPageMaxLines);
+
+    let stream = "";
+    const xobjectEntries = [];
+    placements.forEach((p) => {
+      stream += "q\n" + p.drawW.toFixed(2) + " 0 0 " + p.drawH.toFixed(2) + " " + p.imgX.toFixed(2) + " " + p.imgY.toFixed(2) + " cm /Im" + p.imgObjNum + " Do\nQ\n";
+      xobjectEntries.push("/Im" + p.imgObjNum + " " + p.imgObjNum + " 0 R");
     });
-    stream += "ET\n";
+    stream += buildTextBlock(firstPageLines, fontSize, leading, textTop);
     const streamBytes = new TextEncoder().encode(stream);
 
     const contentObjNum = reserveObject();
@@ -126,15 +175,24 @@ function createPdfBuilder() {
         PAGE_W +
         " " +
         PAGE_H +
-        "] /Resources << /XObject << /Im" +
-        imgObjNum +
-        " " +
-        imgObjNum +
-        " 0 R >> /Font << /F1 FONT_REF >> >> /Contents " +
+        "] /Resources << /XObject << " +
+        xobjectEntries.join(" ") +
+        " >> /Font << /F1 FONT_REF >> >> /Contents " +
         contentObjNum +
         " 0 R >>\nendobj\n",
     ]);
     pageObjNums.push(pageObjNum);
+
+    while (remaining.length > 0) {
+      const pageLines = remaining.slice(0, contPageMaxLines);
+      remaining = remaining.slice(contPageMaxLines);
+      addTextOnlyPage(pageLines, fontSize, leading);
+    }
+  }
+
+  // Kept for compatibility with a single main image and no dropdown crops.
+  function addImagePage(jpegBytes, imgWidthPx, imgHeightPx, textLines) {
+    addCapturePages([{ jpegBytes, width: imgWidthPx, height: imgHeightPx }], textLines);
   }
 
   // Approximate running output size in bytes so far -- used to decide when
@@ -203,5 +261,5 @@ function createPdfBuilder() {
     return out;
   }
 
-  return { addImagePage, currentSize, pageCount, finish };
+  return { addImagePage, addCapturePages, currentSize, pageCount, finish };
 }

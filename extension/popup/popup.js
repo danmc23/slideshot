@@ -124,18 +124,31 @@ async function exportSession(session) {
     );
 
     if (croppedPng) {
-      const img = await loadImage(croppedPng);
-      const { dataUrl: jpegUrl, width, height } = downscaleToJpeg(img);
-      const jpegBytes = dataUrlToBytes(jpegUrl);
+      const pdfImages = [];
+      const mainImg = await loadImage(croppedPng);
+      const mainJpeg = downscaleToJpeg(mainImg);
+      const mainJpegBytes = dataUrlToBytes(mainJpeg.dataUrl);
+      pdfImages.push({ jpegBytes: mainJpegBytes, width: mainJpeg.width, height: mainJpeg.height });
 
-      if (builder.pageCount() > 0 && builder.currentSize() + jpegBytes.length > PDF_SPLIT_TARGET_BYTES) {
+      let estimatedBytes = mainJpegBytes.length;
+      for (const d of step.dropdowns || []) {
+        const raw = imageData[d.key];
+        if (!raw) continue;
+        const dImg = await loadImage(raw);
+        const dJpeg = downscaleToJpeg(dImg);
+        const dBytes = dataUrlToBytes(dJpeg.dataUrl);
+        pdfImages.push({ jpegBytes: dBytes, width: dJpeg.width, height: dJpeg.height });
+        estimatedBytes += dBytes.length;
+      }
+
+      if (builder.pageCount() > 0 && builder.currentSize() + estimatedBytes > PDF_SPLIT_TARGET_BYTES) {
         pdfParts.push(builder.finish());
         builder = createPdfBuilder();
       }
 
       const textBlock =
         "Step " + (i + 1) + (step.pageTitle ? " — " + step.pageTitle : "") + "\n" + (step.notesText || "") + (narration ? "\n\nNarration: " + narration : "");
-      builder.addImagePage(jpegBytes, width, height, [textBlock]);
+      builder.addCapturePages(pdfImages, [textBlock]);
     }
   }
   pdfParts.push(builder.finish());
