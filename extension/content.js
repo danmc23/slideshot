@@ -926,11 +926,10 @@
         canvas.width,
         canvas.height
       );
-      // Bake the same dashed border onto the crop itself that marks its
-      // source area on the main capture, so the two are obviously linked
-      // when viewed side by side.
-      const borderColor = safetyStripeActive ? "#ffd700" : currentHighlightColor;
-      drawDropdownCropBorder(ctx, canvas.width, canvas.height, scale, borderColor);
+      // Deliberately no border baked onto the crop itself -- kept as a
+      // clean, unmodified image so it can be stitched back together with
+      // other captures manually later if needed. The dashed marker on the
+      // main capture (below) is the only visual link between the two.
 
       // Mark the exact area the dropdown occupied (the crop box just drawn)
       // rather than just the small trigger element originally under the
@@ -1515,7 +1514,7 @@
   // Extended instructions shown on hover over the info icon.
   const EXTENDED_INSTRUCTIONS =
     "HIGHLIGHTS: Shift+G (small), Ctrl+Shift+G (key field / jagged), Shift+H (callout — text box + arrow, requires text)\n" +
-    "Shift+D flags an open dropdown -- works even before Shift+1, with no visual change until the screenshot is safely taken, then drag a box to crop just that region into its own file. A dashed border marks the same area on the main capture and is baked onto the crop image too, so the two are obviously linked.\n\n" +
+    "Shift+D flags an open dropdown -- works even before Shift+1, with no visual change until the screenshot is safely taken, then drag a box to crop just that region into its own file (kept unmodified). A dashed marker on the main capture shows the same area.\n\n" +
     "Escape cancels capture mode entirely with no output (only outside area-select/manual-draw/dropdown-crop, which have their own Escape).\n\n" +
     "DESCRIBE: Hover a highlight then Shift+J for title+notes. Bullets: start with '- ', Tab/Shift+Tab to indent.\n\n" +
     "NUMBERS: Shift+N toggles number mode, then 0-9 over a highlight to tag it. Drag the badge to reposition.\n\n" +
@@ -2548,31 +2547,15 @@
     ctx.restore();
   }
 
-  // Dropdown-flag marker: a dotted box distinguishing it from small (solid),
-  // key (jagged), and callout (dashed) highlight styles.
-  // Dash pattern shared with drawDropdownCropBorder() below, so the marker
-  // on the main capture and the border baked onto the separate dropdown
-  // crop image are obviously the same thing when viewed side by side.
-  const DROPDOWN_DASH = (scale) => [Math.max(10, 10 * scale), Math.max(6, 6 * scale)];
-
+  // Dropdown-flag marker: a dashed box (distinct from small/solid, key/
+  // jagged, and callout/dashed-but-different-pitch) drawn only on the main
+  // capture -- the crop image itself is left unmodified.
   function drawDropdownFlagHighlight(ctx, x, y, w, h, scale, color) {
     ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(3.5, 3.5 * scale);
-    ctx.setLineDash(DROPDOWN_DASH(scale));
+    ctx.setLineDash([Math.max(10, 10 * scale), Math.max(6, 6 * scale)]);
     ctx.strokeRect(x, y, w, h);
-    ctx.restore();
-  }
-
-  // Baked onto the small dropdown crop image itself (not just drawn live on
-  // the main capture), inset so the dashed line isn't clipped at the edge.
-  function drawDropdownCropBorder(ctx, w, h, scale, color) {
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(3.5, 3.5 * scale);
-    ctx.setLineDash(DROPDOWN_DASH(scale));
-    const inset = ctx.lineWidth / 2;
-    ctx.strokeRect(inset, inset, Math.max(0, w - inset * 2), Math.max(0, h - inset * 2));
     ctx.restore();
   }
 

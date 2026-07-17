@@ -107,21 +107,32 @@ function createPdfBuilder() {
   // Adds one or more images (e.g. the main screenshot plus any dropdown
   // crops for that step) to a single page, laid out top-to-bottom, followed
   // by wrapped text lines below the last image. If the text doesn't fit in
-  // the remaining space, it continues onto additional text-only pages
-  // instead of being cut off.
+  // the remaining space, it continues onto additional (always-portrait)
+  // text-only pages instead of being cut off.
+  //
+  // A wide primary image (e.g. a full-page screenshot) gets a landscape
+  // page instead of being shrunk to fit portrait width -- rotating the
+  // page, not the image, keeps more of its native resolution readable.
+  // Secondary images (dropdown crops) are scaled by the SAME factor as the
+  // primary one, so they're drawn at their true size relative to it
+  // instead of each being stretched up to fill the page width too.
   function addCapturePages(images, textLines) {
-    const usableW = PAGE_W - MARGIN * 2;
-    const maxTotalImgH = PAGE_H * 0.68;
+    const primary = images[0];
+    const isWide = !!primary && primary.width > 0 && primary.height > 0 && primary.width / primary.height > 1.3;
+    const pageW = isWide ? PAGE_H : PAGE_W;
+    const pageH = isWide ? PAGE_W : PAGE_H;
+    const usableW = pageW - MARGIN * 2;
+    const maxTotalImgH = pageH * 0.68;
 
-    // Scale every image to the same width, capping total stacked height.
-    const naturalTotalH = images.reduce((sum, im) => sum + (im.width > 0 ? usableW * (im.height / im.width) : 0), 0);
-    const shrink = naturalTotalH > maxTotalImgH ? maxTotalImgH / naturalTotalH : 1;
+    let pxToPt = primary && primary.width > 0 ? usableW / primary.width : 1;
+    const naturalTotalH = images.reduce((sum, im) => sum + im.height * pxToPt, 0);
+    if (naturalTotalH > maxTotalImgH) pxToPt *= maxTotalImgH / naturalTotalH;
 
     const placements = [];
-    let cursorY = PAGE_H - MARGIN;
+    let cursorY = pageH - MARGIN;
     images.forEach((im) => {
-      const drawW = usableW * shrink;
-      const drawH = im.width > 0 ? drawW * (im.height / im.width) : 0;
+      const drawW = im.width * pxToPt;
+      const drawH = im.height * pxToPt;
       const imgObjNum = reserveObject();
       setObject(imgObjNum, [
         imgObjNum +
@@ -135,15 +146,18 @@ function createPdfBuilder() {
         im.jpegBytes,
         "\nendstream\nendobj\n",
       ]);
-      const imgX = MARGIN + (usableW - drawW) / 2;
+      const imgX = MARGIN + (usableW - drawW) / 2; // centered, so a smaller dropdown crop doesn't stretch edge to edge
       const imgY = cursorY - drawH;
       placements.push({ imgObjNum, imgX, imgY, drawW, drawH });
       cursorY = imgY - 10;
     });
 
+    // Landscape pages are wider, so a bit more text fits per line -- scale
+    // the wrap width to match instead of wrapping as if still portrait.
+    const maxChars = Math.max(40, Math.round(92 * (usableW / (PAGE_W - MARGIN * 2))));
     const wrapped = [];
     (textLines || []).forEach((block) => {
-      wrapLines(block, 92).forEach((l) => wrapped.push(l));
+      wrapLines(block, maxChars).forEach((l) => wrapped.push(l));
       wrapped.push("");
     });
 
@@ -172,9 +186,9 @@ function createPdfBuilder() {
     setObject(pageObjNum, [
       pageObjNum +
         " 0 obj\n<< /Type /Page /Parent PAGES_REF /MediaBox [0 0 " +
-        PAGE_W +
+        pageW +
         " " +
-        PAGE_H +
+        pageH +
         "] /Resources << /XObject << " +
         xobjectEntries.join(" ") +
         " >> /Font << /F1 FONT_REF >> >> /Contents " +

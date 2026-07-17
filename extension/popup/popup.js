@@ -7,8 +7,14 @@
 // zip download.
 
 const PDF_SPLIT_TARGET_BYTES = 25 * 1024 * 1024; // stay well under Claude's 30MB/file cap
-const MAX_IMG_DIM = 1600;
-const JPEG_QUALITY = 0.8;
+// 1920 (full HD) long edge + JPEG quality 0.85: legible for typical UI text
+// at the page sizes lib/pdf.js renders at (wide captures now get a
+// landscape page instead of being squeezed into portrait width, so less
+// aggressive downscaling is needed to still fit). Push higher only if a
+// specific capture still reads blurry -- both knobs trade off against the
+// 25MB/part budget above.
+const MAX_IMG_DIM = 1920;
+const JPEG_QUALITY = 0.85;
 const POST_STEP_NARRATION_BUFFER_MS = 4000;
 
 let currentSession = null;

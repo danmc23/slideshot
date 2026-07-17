@@ -44,6 +44,18 @@
 
 ## Recently done
 
+- **Dropdown crop stays unmodified; PDF no longer stretches it to page
+  width; wide screenshots get a landscape page instead of being squeezed.**
+  Removed the baked-on border from the small dropdown crop image (kept
+  clean for manual stitching later) while keeping the dashed marker on the
+  main capture. `addCapturePages()` now derives one px-to-pt scale from the
+  primary image and applies it to every image in the stack, so a small
+  dropdown crop is drawn at its true size relative to the main screenshot
+  instead of being stretched up to fill the page. A primary image wider
+  than ~1.3:1 now gets a landscape page (rotating the page, not the image)
+  instead of being shrunk to fit portrait width. Also bumped the pre-PDF
+  downscale/JPEG settings (1600px/0.8 → 1920px/0.85) now that wide captures
+  have more room to work with.
 - **Draggable callout/text-annotation arrow anchor.** Drag a callout or
   Shift+T text-annotation box and its arrow now snaps to the same 10 preset
   anchor points (corners, side-centers, offset-left/right) used for number/
