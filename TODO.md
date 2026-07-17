@@ -16,13 +16,13 @@
   byte-level structural validation of the PDF/ZIP writers), never loaded in
   an actual browser. Load unpacked, test every hotkey and interaction end to
   end before relying on this for real work.
+
 ## Medium priority
 
-- Update `extension/README.md` further as features change (color system,
-  manual draw mode, text annotations, page freeze are documented, but keep in
-  sync going forward).
-- Update `docs/project-instructions.md` for text annotations, manual-draw
-  highlights, and the color system (currently reflects v0.8.1 behavior).
+- Update `extension/README.md` for the session/PDF/zip model, callout and
+  dropdown-flag tools, and push-to-talk narration (still describes the old
+  per-capture-file, zoom-highlight world). `docs/project-instructions.md`
+  and `extension/help/help.html` are both now current as of this round.
 - `SNAP_PX = 10` (area-selector edge-snap threshold) hasn't been tuned
   against real usage.
 - Page URL is included verbatim in the notes file — no redaction option.
@@ -44,6 +44,17 @@
 
 ## Recently done
 
+- **In-extension help page + rewritten Claude Project instructions.** Added
+  `extension/help/help.html` (full hotkey reference, feature explanations
+  including the dropdown-flag tool, an example session walkthrough), linked
+  from the toolbar popup. Fully rewrote `docs/project-instructions.md` for
+  the current session/PDF/zip model (it still described the old
+  per-capture-file world with zoom highlights) — new highlight types,
+  `Ref: H-<id>`, narration text, dropdown crops, landscape pages, and
+  multi-part PDFs are all covered, plus an instruction to use the
+  `markitdown` MCP connector for token-efficient PDF text extraction
+  (with a note that it won't recover the embedded screenshots themselves —
+  those still need the raw zip PNGs or a targeted per-slide vision read).
 - **Voice narration is now push-to-talk (hold Alt), and a likely root
   cause of "nothing is ever transcribed" is fixed.** Sessions no longer
   auto-start continuous STT; holding Alt while a session is recording

@@ -148,3 +148,15 @@ h1 {
   font-size: 11px;
   color: #888;
 }
+
+#hc-help-link {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #04a0c4;
+  text-decoration: none;
+}
+
+#hc-help-link:hover {
+  text-decoration: underline;
+}
