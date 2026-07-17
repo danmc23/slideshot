@@ -2,32 +2,27 @@
 
 ## High priority
 
-- **Titles aren't reliably making it into the notes file.** `guessTitle()` is
-  called at annotation creation and stores a best-effort title, but it often
-  comes back empty (no `aria-label`, no `title` attribute, no matching
-  `<label>`, not a table cell, no placeholder, or text too long) — so unless
-  the user also opens the describe panel (`Shift+J`) and the title gets
-  re-saved there, a highlight can end up with no title at all in the output.
-  This applies to every marked item — small/key/zoom highlights and context
-  tags — not just described ones. Fix: make sure whatever was auto-detected
-  (or manually entered) is always emitted in the `.txt` file for anything the
-  user flagged, regardless of whether they added a description, since the
-  downstream Claude Project relies on titles to interpret meaning for slide
-  text generation.
+- **`guessTitle()` heuristic is still weak.** Every highlight now always
+  emits a `Title:` line in the notes output (falls back to "(untitled — no
+  label detected)" instead of being silently omitted — see Recently done),
+  but the underlying auto-detection itself still often comes back empty (no
+  `aria-label`, no `title` attribute, no matching `<label>`, not a table
+  cell, no placeholder, or text too long). Worth revisiting the heuristic
+  itself at some point, separate from the output-formatting fix.
 - **Browser testing pass.** No in-browser testing has been done on anything
-  from v0.8.0 through the current build — all changes were syntax-checked
-  only. Load unpacked, test every hotkey and interaction end to end.
-- **Wire text annotation (`Shift+T`) dragging** into the bubble adjustment
-  phase so text boxes can be repositioned before capture (currently only
-  zoom-callout bubbles are draggable there).
+  from v0.8.0 through the current build (including this round's callout
+  tool, dropdown-flag tool, session/voice recording, popup, and PDF/zip
+  export) — all changes were syntax/structure-checked only (including a
+  byte-level structural validation of the PDF/ZIP writers), never loaded in
+  an actual browser. Load unpacked, test every hotkey and interaction end to
+  end before relying on this for real work.
 
 ## Medium priority
 
-- Update `extension/README.md` further as features change (color system,
-  manual draw mode, text annotations, page freeze are documented, but keep in
-  sync going forward).
-- Update `docs/project-instructions.md` for text annotations, manual-draw
-  highlights, and the color system (currently reflects v0.8.1 behavior).
+- Update `extension/README.md` for the session/PDF/zip model, callout and
+  dropdown-flag tools, and push-to-talk narration (still describes the old
+  per-capture-file, zoom-highlight world). `docs/project-instructions.md`
+  and `extension/help/help.html` are both now current as of this round.
 - `SNAP_PX = 10` (area-selector edge-snap threshold) hasn't been tuned
   against real usage.
 - Page URL is included verbatim in the notes file — no redaction option.
@@ -49,6 +44,132 @@
 
 ## Recently done
 
+- **In-extension help page + rewritten Claude Project instructions.** Added
+  `extension/help/help.html` (full hotkey reference, feature explanations
+  including the dropdown-flag tool, an example session walkthrough), linked
+  from the toolbar popup. Fully rewrote `docs/project-instructions.md` for
+  the current session/PDF/zip model (it still described the old
+  per-capture-file world with zoom highlights) — new highlight types,
+  `Ref: H-<id>`, narration text, dropdown crops, landscape pages, and
+  multi-part PDFs are all covered, plus an instruction to use the
+  `markitdown` MCP connector for token-efficient PDF text extraction
+  (with a note that it won't recover the embedded screenshots themselves —
+  those still need the raw zip PNGs or a targeted per-slide vision read).
+- **Voice narration is now push-to-talk (hold Alt), and a likely root
+  cause of "nothing is ever transcribed" is fixed.** Sessions no longer
+  auto-start continuous STT; holding Alt while a session is recording
+  starts recognition for as long as it's held (PTT_START/PTT_STOP),
+  auto-stopping on window blur too (e.g. Alt-tabbing away never delivers a
+  keyup to the page, which would otherwise leave it recording
+  indefinitely). Separately: `chrome.offscreen.createDocument()` resolving
+  doesn't guarantee the offscreen document's own script has attached its
+  message listener yet -- the very first START_STT sent right after
+  creating it could be silently dropped with zero error, which is a very
+  plausible explanation for why narration wasn't working at all. Fixed
+  with an OFFSCREEN_READY handshake (with a 2s timeout safety net).
+  Actionable speech-recognition errors (network/firewall, mic access,
+  unsupported) are now also relayed to an on-page toast instead of failing
+  silently -- "no-speech" and "aborted" are filtered out since those fire
+  routinely during normal use. Narration-to-step association was already
+  handled by the existing time-window alignment in `computeNarrationForSteps()`
+  and needed no changes for push-to-talk.
+- **Dropdown crop stays unmodified; PDF no longer stretches it to page
+  width; wide screenshots get a landscape page instead of being squeezed.**
+  Removed the baked-on border from the small dropdown crop image (kept
+  clean for manual stitching later) while keeping the dashed marker on the
+  main capture. `addCapturePages()` now derives one px-to-pt scale from the
+  primary image and applies it to every image in the stack, so a small
+  dropdown crop is drawn at its true size relative to the main screenshot
+  instead of being stretched up to fill the page. A primary image wider
+  than ~1.3:1 now gets a landscape page (rotating the page, not the image)
+  instead of being shrunk to fit portrait width. Also bumped the pre-PDF
+  downscale/JPEG settings (1600px/0.8 → 1920px/0.85) now that wide captures
+  have more room to work with.
+- **Draggable callout/text-annotation arrow anchor.** Drag a callout or
+  Shift+T text-annotation box and its arrow now snaps to the same 10 preset
+  anchor points (corners, side-centers, offset-left/right) used for number/
+  context badges, instead of always pointing at the target element's dead
+  center. (Also fixed a real bug found along the way: `.hc-text-label` had
+  `pointer-events: none`, so it couldn't have received a drag in the first
+  place, and `cloneAnnotationsForHistory()` was dropping `dropdownImage` and
+  the new `textLabelAnchor` field on every Ctrl+Z undo/redo.)
+- **PDF export no longer truncates a step's text.** `addImagePage` used to
+  draw all of a step's wrapped notes/narration text starting right below
+  the image with no page-break logic — text that didn't fit just ran off
+  the bottom of the page and was never visible. The PDF writer now has
+  `addCapturePages()`, which fits as much text as it can below the image(s)
+  on the first page and continues onto additional text-only pages (using
+  nearly the full page height) until everything fits, however many pages
+  that takes.
+- **Dropdown crop images are now included in the PDF**, stacked with the
+  main highlighted screenshot on the same page (not just in the zip's raw
+  PNGs as before), via the same `addCapturePages()` change above.
+- **Dropdown highlighting now visually links the two images.** The
+  dropdown-flag marker on the main capture and a matching border baked
+  directly onto the separate crop image now share one dashed style (was a
+  small dotted pattern before, and the crop image had no border at all).
+  The marker also now outlines the exact crop area the user drew (i.e. what
+  the dropdown actually occupied) rather than just the small trigger
+  element originally under the cursor, while still guessing the title from
+  that original trigger element.
+- **Fixed dropdown-flag timing for good, plus a proper cancel/exit and
+  suppressed duplicate downloads during a session.** `Shift+D` now works
+  standalone (even before `Shift+1`) and defers every visual side effect
+  (badge/freeze/toast/flash) until *after* the screenshot is already safely
+  captured, so nothing can disturb the dropdown's hover state first — this
+  replaces the earlier fix (moving the capture-name prompt to finish-time),
+  which turned out to only be part of the problem. `Escape` while in capture
+  mode (outside area-select/manual-draw/dropdown-crop) now cancels it
+  entirely with no output. And while a session is recording, the normal
+  per-capture PNG/PNG/`.txt` downloads are now skipped (the capture still
+  becomes a session step as before) — they were confusing duplicate clutter
+  once the zip export exists as the real deliverable for that mode.
+- **On-page collapsible session panel + matching popup controls.** A
+  floating panel (independent of capture mode) shows session status/step
+  list with Start/Stop, Discard, and per-step Delete/Edit-narration — wiring
+  the `DELETE_STEP`/`UPDATE_STEP_NARRATION` handlers that existed with no UI
+  before. The toolbar popup's step list got matching per-step controls too.
+  Saved for later: re-recording a previous step in place, and per-highlight
+  title/description editing (would need storing structured highlight data
+  per step instead of just the pre-rendered notes text).
+- **Session recording + voice narration + combined export.** `Ctrl+Shift+E`
+  starts/stops a session (stored in `chrome.storage.local`); every finished
+  capture made while a session is recording is added as a step
+  automatically. While recording, an offscreen document runs
+  continuous Web Speech API speech-to-text (no raw audio is ever stored,
+  only transcript text with timestamps) — first use opens a one-time tab to
+  grant microphone access, since offscreen documents can't show permission
+  prompts themselves. A new popup (toolbar icon) shows session status/step
+  list and Start/Stop/Discard/Export controls. Export builds one PDF page
+  per step (screenshot + highlight refs/titles/descriptions + narration,
+  time-window-aligned to each step), auto-splitting into multiple PDF parts
+  if a part would near Claude's 30MB per-file upload limit, and bundles the
+  PDF part(s) + a combined `session-notes.md` + the raw per-step PNGs into
+  one zip download. The PDF writer and ZIP writer are both hand-rolled
+  (no dependencies) and were structurally validated (byte-level xref/zip
+  parsing) outside the browser, but not yet opened in a real PDF viewer or
+  browser — see the browser-testing-pass item above.
+- **Dropdown-flag tool (`Shift+D`).** Hovering an open dropdown and pressing
+  it immediately screenshots the viewport (before any mouse movement can
+  close the dropdown), then lets you drag a crop box over that now-frozen
+  image to pull out just the dropdown as its own small PNG, correlated to a
+  marker on the main capture via a `Ref: H-<id>` in the notes. Only works
+  for dropdowns that are real page DOM elements (custom/ARIA menus) — native
+  `<select>` popups render outside the page's pixels and can't be
+  screenshotted by any Chrome extension.
+- **Replaced the zoom/magnify highlight with an arrow+textbox callout tool**
+  (still on `Shift+H`). Requires entering text before the highlight is
+  created (cancelling discards it). Removed all the old
+  magnification/bubble-collision/bubble-adjustment code along with it.
+- **Every highlight now gets a stable `Ref: H-<id>`** in the notes output,
+  independent of its optional visual number bubble, plus a guaranteed
+  `Title:` line (see the `guessTitle()` item above for the remaining gap).
+- Fixed downloads: only the `.png` was ever saving because the extension
+  triggered all three files via content-script `<a download>` clicks in a
+  row, which Chrome silently blocks after the first ("multiple automatic
+  downloads"). Downloads now go through `chrome.downloads.download()` in
+  the background worker (new `downloads` permission), which isn't subject
+  to that block.
 - Unified the enter-capture-mode and finish-capture hotkeys onto `Shift+1`
   (press once to enter, press again while in capture mode to open the area
   selector and finish).
