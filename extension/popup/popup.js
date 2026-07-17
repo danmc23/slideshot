@@ -193,7 +193,62 @@ function render() {
   stepsEl.innerHTML = "";
   currentSession.steps.forEach((s, i) => {
     const li = document.createElement("li");
-    li.textContent = i + 1 + ". " + (s.pageTitle || s.pageUrl || "(untitled)");
+    li.className = "hc-step-row";
+
+    const row = document.createElement("div");
+    row.className = "hc-step-row-main";
+
+    const label = document.createElement("span");
+    label.className = "hc-step-label";
+    label.textContent = i + 1 + ". " + (s.pageTitle || s.pageUrl || "(untitled)");
+    row.appendChild(label);
+
+    const narrationBtn = document.createElement("button");
+    narrationBtn.type = "button";
+    narrationBtn.className = "hc-step-btn";
+    narrationBtn.textContent = "Narration";
+    narrationBtn.title = "Edit narration text for this step";
+    row.appendChild(narrationBtn);
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "hc-step-btn hc-step-del";
+    delBtn.textContent = "✕";
+    delBtn.title = "Delete this step";
+    delBtn.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "DELETE_STEP", stepId: s.id }, (resp) => {
+        currentSession = (resp && resp.session) || null;
+        render();
+      });
+    });
+    row.appendChild(delBtn);
+    li.appendChild(row);
+
+    // Popups can't use window.prompt()/confirm(), so narration editing is an
+    // inline textarea toggled open by the button above rather than a dialog.
+    const editor = document.createElement("div");
+    editor.className = "hc-step-editor";
+    editor.hidden = true;
+    const textarea = document.createElement("textarea");
+    textarea.rows = 3;
+    textarea.value = s.narrationOverride != null ? s.narrationOverride : "";
+    editor.appendChild(textarea);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "UPDATE_STEP_NARRATION", stepId: s.id, text: textarea.value.trim() }, (resp) => {
+        currentSession = (resp && resp.session) || null;
+        render();
+      });
+    });
+    editor.appendChild(saveBtn);
+    li.appendChild(editor);
+
+    narrationBtn.addEventListener("click", () => {
+      editor.hidden = !editor.hidden;
+    });
+
     stepsEl.appendChild(li);
   });
 

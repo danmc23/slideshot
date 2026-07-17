@@ -1,9 +1,10 @@
 // content.js
 // Hotkey capture tool.
 //
-// Shift+1         -> enter capture mode (prompts for an optional capture name);
-//                    press again while already in capture mode to open the
-//                    capture-area selector, then screenshot + PNG (+ full-page PNG) + .txt
+// Shift+1         -> enter capture mode; press again while already in capture
+//                    mode to open the capture-area selector, confirm it, then
+//                    optionally name the capture before it's finalized as
+//                    PNG (+ full-page PNG) + .txt
 // Shift+G         -> queue a small red-box highlight on the hovered element
 // Ctrl+Shift+G    -> queue a jagged-outline "key field" highlight on the hovered element
 // Shift+H         -> queue a callout: text box + arrow pointing at the hovered element
@@ -164,6 +165,178 @@
     }
   });
 
+  // =========================================================================
+  // On-page session panel: a collapsible floating panel (shown whenever a
+  // session exists) with status, the step list, and Start/Stop/Discard plus
+  // per-step Delete/Edit-narration. Reads chrome.storage.local directly
+  // (content scripts can read it) but routes every write through
+  // background.js's message handlers, same as the toolbar popup, so all the
+  // side effects (badge, offscreen doc, image-key cleanup) stay centralized.
+  // Export itself stays a toolbar-popup action (chrome.downloads isn't
+  // reachable from a content script).
+  // =========================================================================
+
+  let sessionPanelEl = null;
+  let sessionPanelCollapsed = false;
+  let currentSessionState = null;
+  let sessionDiscardArmed = false;
+
+  function ensureSessionPanel() {
+    if (sessionPanelEl) return;
+    sessionPanelEl = document.createElement("div");
+    sessionPanelEl.id = "hc-session-panel";
+    document.body.appendChild(sessionPanelEl);
+  }
+
+  function removeSessionPanel() {
+    if (sessionPanelEl) {
+      sessionPanelEl.remove();
+      sessionPanelEl = null;
+    }
+  }
+
+  function editStepNarration(step) {
+    showTextPanel({
+      heading: "Edit narration — step",
+      hideTitleField: true,
+      descValue: step.narrationOverride != null ? step.narrationOverride : "",
+      onSave: (_title, desc) => {
+        chrome.runtime.sendMessage({ type: "UPDATE_STEP_NARRATION", stepId: step.id, text: desc.trim() }, () => {
+          void chrome.runtime.lastError;
+        });
+      },
+    });
+  }
+
+  function renderSessionPanel() {
+    const session = currentSessionState;
+    if (!session) {
+      removeSessionPanel();
+      return;
+    }
+    ensureSessionPanel();
+
+    const recording = session.status === "recording";
+    const count = session.steps.length;
+
+    sessionPanelEl.innerHTML = "";
+
+    const header = document.createElement("div");
+    header.className = "hc-session-header";
+    header.innerHTML =
+      '<span class="hc-session-title">' +
+      (recording ? "● Slideshot session" : "Slideshot session") +
+      '</span><span class="hc-session-count">' +
+      count +
+      " step" +
+      (count === 1 ? "" : "s") +
+      '</span><span class="hc-session-chevron">' +
+      (sessionPanelCollapsed ? "▸" : "▾") +
+      "</span>";
+    header.addEventListener("click", () => {
+      sessionPanelCollapsed = !sessionPanelCollapsed;
+      renderSessionPanel();
+    });
+    sessionPanelEl.appendChild(header);
+
+    if (sessionPanelCollapsed) return;
+
+    const body = document.createElement("div");
+    body.className = "hc-session-body";
+
+    const list = document.createElement("ul");
+    list.className = "hc-session-steps";
+    session.steps.forEach((s, i) => {
+      const li = document.createElement("li");
+
+      const label = document.createElement("span");
+      label.className = "hc-session-step-label";
+      label.textContent = i + 1 + ". " + (s.pageTitle || s.pageUrl || "(untitled)");
+      li.appendChild(label);
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "hc-session-step-btn";
+      editBtn.textContent = "Narration";
+      editBtn.title = "Edit narration text for this step";
+      editBtn.addEventListener("click", () => editStepNarration(s));
+      li.appendChild(editBtn);
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "hc-session-step-btn hc-session-step-del";
+      delBtn.textContent = "✕";
+      delBtn.title = "Delete this step";
+      delBtn.addEventListener("click", () => {
+        chrome.runtime.sendMessage({ type: "DELETE_STEP", stepId: s.id }, () => {
+          void chrome.runtime.lastError;
+        });
+      });
+      li.appendChild(delBtn);
+
+      list.appendChild(li);
+    });
+    body.appendChild(list);
+
+    const actions = document.createElement("div");
+    actions.className = "hc-session-actions";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.textContent = recording ? "Stop session" : "Start new session";
+    toggleBtn.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "TOGGLE_SESSION" }, () => {
+        void chrome.runtime.lastError;
+      });
+    });
+    actions.appendChild(toggleBtn);
+
+    const discardBtn = document.createElement("button");
+    discardBtn.type = "button";
+    discardBtn.className = "hc-session-discard";
+    discardBtn.textContent = "Discard";
+    discardBtn.addEventListener("click", () => {
+      if (!sessionDiscardArmed) {
+        sessionDiscardArmed = true;
+        discardBtn.textContent = "Click again to confirm";
+        setTimeout(() => {
+          sessionDiscardArmed = false;
+          discardBtn.textContent = "Discard";
+        }, 3000);
+        return;
+      }
+      sessionDiscardArmed = false;
+      chrome.runtime.sendMessage({ type: "RESET_SESSION" }, () => {
+        void chrome.runtime.lastError;
+      });
+    });
+    actions.appendChild(discardBtn);
+    body.appendChild(actions);
+
+    const hint = document.createElement("div");
+    hint.className = "hc-session-hint";
+    hint.textContent = recording ? "Stop the session, then click the toolbar icon to export." : "Click the Slideshot toolbar icon to export.";
+    body.appendChild(hint);
+
+    sessionPanelEl.appendChild(body);
+  }
+
+  function refreshSessionState() {
+    chrome.storage.local.get("slideshot_session", (res) => {
+      currentSessionState = res.slideshot_session || null;
+      renderSessionPanel();
+    });
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && Object.prototype.hasOwnProperty.call(changes, "slideshot_session")) {
+      currentSessionState = changes.slideshot_session.newValue || null;
+      renderSessionPanel();
+    }
+  });
+
+  refreshSessionState();
+
   function isEditableActive() {
     const el = document.activeElement;
     if (!el) return false;
@@ -320,7 +493,6 @@
     freezePage();
     toast("Capture mode ON");
     lightFlash();
-    promptCaptureName();
   }
 
   function toggleNumberMode() {
@@ -790,14 +962,22 @@
   }
 
   // --- capture naming prompt ---
-  function promptCaptureName() {
+  // Prompted at finish time (after the capture area is confirmed), not at
+  // capture-mode entry -- a full-screen prompt shown immediately on entry
+  // would drop :hover on whatever was under the cursor (e.g. an open
+  // dropdown you wanted to flag with Shift+D) before you got a chance to.
+  function promptCaptureName(onDone) {
     showTextPanel({
       heading: "Capture name (optional)",
-      titleValue: "",
+      titleValue: captureName,
       titlePlaceholder: 'e.g. "PO approval flow"',
       hideDescField: true,
       onSave: (title) => {
         captureName = (title || "").trim();
+        if (onDone) onDone();
+      },
+      onCancel: () => {
+        if (onDone) onDone();
       },
     });
   }
@@ -1689,7 +1869,7 @@
     return !!(
       el.closest &&
       el.closest(
-        "#hc-select-box, .hc-handle, #hc-select-toolbar, #hc-badge, .hc-toast, #hc-panel-overlay, #hc-enter-flash, .hc-flash-box, .hc-persist-box, .hc-persist-badge, .hc-text-label, .hc-manual-draw-box, .hc-manual-anchor"
+        "#hc-select-box, .hc-handle, #hc-select-toolbar, #hc-badge, .hc-toast, #hc-panel-overlay, #hc-enter-flash, .hc-flash-box, .hc-persist-box, .hc-persist-badge, .hc-text-label, .hc-manual-draw-box, .hc-manual-anchor, #hc-session-panel"
       )
     );
   }
@@ -1967,7 +2147,7 @@
     }
     const finalRect = { ...selectRect };
     endAreaSelection();
-    proceedToCapture(finalRect);
+    promptCaptureName(() => proceedToCapture(finalRect));
   }
 
   function proceedToCapture(finalRect) {

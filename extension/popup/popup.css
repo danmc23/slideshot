@@ -38,13 +38,67 @@ h1 {
 #hc-steps li {
   padding: 6px 8px;
   border-bottom: 1px solid #f0f0f0;
+}
+
+#hc-steps li:last-child {
+  border-bottom: none;
+}
+
+.hc-step-row-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hc-step-label {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-#hc-steps li:last-child {
-  border-bottom: none;
+.hc-step-btn {
+  background: #eee;
+  color: #222;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.hc-step-del {
+  color: #a33;
+}
+
+.hc-step-editor {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hc-step-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 11px;
+  resize: vertical;
+}
+
+.hc-step-editor button {
+  align-self: flex-end;
+  background: #111;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 #hc-actions {
