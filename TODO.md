@@ -55,11 +55,30 @@
 
 ## Recently done
 
+- **Fixed dropdown-flag timing for good, plus a proper cancel/exit and
+  suppressed duplicate downloads during a session.** `Shift+D` now works
+  standalone (even before `Shift+1`) and defers every visual side effect
+  (badge/freeze/toast/flash) until *after* the screenshot is already safely
+  captured, so nothing can disturb the dropdown's hover state first — this
+  replaces the earlier fix (moving the capture-name prompt to finish-time),
+  which turned out to only be part of the problem. `Escape` while in capture
+  mode (outside area-select/manual-draw/dropdown-crop) now cancels it
+  entirely with no output. And while a session is recording, the normal
+  per-capture PNG/PNG/`.txt` downloads are now skipped (the capture still
+  becomes a session step as before) — they were confusing duplicate clutter
+  once the zip export exists as the real deliverable for that mode.
+- **On-page collapsible session panel + matching popup controls.** A
+  floating panel (independent of capture mode) shows session status/step
+  list with Start/Stop, Discard, and per-step Delete/Edit-narration — wiring
+  the `DELETE_STEP`/`UPDATE_STEP_NARRATION` handlers that existed with no UI
+  before. The toolbar popup's step list got matching per-step controls too.
+  Saved for later: re-recording a previous step in place, and per-highlight
+  title/description editing (would need storing structured highlight data
+  per step instead of just the pre-rendered notes text).
 - **Session recording + voice narration + combined export.** `Ctrl+Shift+E`
   starts/stops a session (stored in `chrome.storage.local`); every finished
   capture made while a session is recording is added as a step
-  automatically (existing per-capture downloads still happen too — this is
-  additive, not a replacement). While recording, an offscreen document runs
+  automatically. While recording, an offscreen document runs
   continuous Web Speech API speech-to-text (no raw audio is ever stored,
   only transcript text with timestamps) — first use opens a one-time tab to
   grant microphone access, since offscreen documents can't show permission

@@ -8,8 +8,15 @@
 // Shift+G         -> queue a small red-box highlight on the hovered element
 // Ctrl+Shift+G    -> queue a jagged-outline "key field" highlight on the hovered element
 // Shift+H         -> queue a callout: text box + arrow pointing at the hovered element
-// Shift+D         -> flag the hovered (open) dropdown; captures it separately so
-//                    it survives, then crop just that region out of the frozen shot
+// Shift+D         -> flag the hovered (open) dropdown; works even before
+//                    Shift+1 (silently enters capture mode if needed, with
+//                    zero visual change before the screenshot is taken, so
+//                    the dropdown's hover state can't be disturbed first),
+//                    captures it separately, then crop just that region out
+//                    of the frozen shot
+// Escape          -> (while in capture mode, not mid area-select/manual-draw/
+//                    dropdown-crop) cancel capture mode entirely -- discards
+//                    everything marked so far, produces no output
 // Shift+J         -> describe the highlight under the cursor (title + notes)
 // Shift+K         -> add a "top-level" overview note for the whole capture
 // Shift+N         -> toggle number mode (then press 0-9 over a highlight to tag it)
@@ -412,6 +419,24 @@
       return;
     }
 
+    // Dropdown flagging works whether or not capture mode has been entered
+    // yet -- entering capture mode first (even silently) risks disturbing
+    // the dropdown's hover state before you get a chance to flag it, so
+    // this is a standalone action instead of being gated behind captureMode.
+    if (shift && !ctrl && code === "KeyD") {
+      e.preventDefault();
+      e.stopPropagation();
+      handleDropdownFlag();
+      return;
+    }
+
+    if (captureMode && !ctrl && !shift && e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelCaptureMode();
+      return;
+    }
+
     if (!captureMode) return;
 
     if (shift && !ctrl && code === "KeyG") {
@@ -427,13 +452,6 @@
       e.stopPropagation();
       if (manualDrawMode) beginManualDraw("callout");
       else queueCalloutFlow();
-      return;
-    }
-
-    if (shift && !ctrl && code === "KeyD") {
-      e.preventDefault();
-      e.stopPropagation();
-      handleDropdownFlag();
       return;
     }
 
@@ -481,7 +499,11 @@
   }
 
   // --- capture mode state ---
-  function enterCaptureMode() {
+  // Split so handleDropdownFlag() can enter capture mode silently, deferring
+  // every visual side effect (badge/freeze/toast/flash) until after a
+  // screenshot is already safely in hand -- entering capture mode should
+  // never itself be the thing that disturbs an open dropdown's hover state.
+  function resetCaptureState() {
     captureMode = true;
     numberMode = false;
     captureName = "";
@@ -489,10 +511,18 @@
     contextEntries = [];
     topLevelNotes = [];
     historyStack = [];
+  }
+
+  function showCaptureModeEnteredFeedback() {
     showBadge();
     freezePage();
     toast("Capture mode ON");
     lightFlash();
+  }
+
+  function enterCaptureMode() {
+    resetCaptureState();
+    showCaptureModeEnteredFeedback();
   }
 
   function toggleNumberMode() {
@@ -738,9 +768,17 @@
       toast("Hover the open dropdown, then press Shift+D");
       return;
     }
-    toast("Capturing dropdown…");
+
+    // If capture mode isn't active yet, enter it silently -- no toast/
+    // flash/badge until *after* the screenshot is safely captured below,
+    // so literally nothing changes on screen before the dropdown is frozen
+    // into the image.
+    const enteringCaptureMode = !captureMode;
+    if (enteringCaptureMode) resetCaptureState();
+
     try {
       chrome.runtime.sendMessage({ type: "CAPTURE_TAB" }, (resp) => {
+        if (enteringCaptureMode) showCaptureModeEnteredFeedback();
         if (chrome.runtime.lastError || !resp || resp.error) {
           const msg = (resp && resp.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || "unknown error";
           toast("Dropdown capture failed: " + msg);
@@ -749,6 +787,7 @@
         beginDropdownCropSelect(resp.dataUrl, el);
       });
     } catch (err) {
+      if (enteringCaptureMode) showCaptureModeEnteredFeedback();
       console.error("Slideshot: dropdown capture message failed", err);
       toast("Extension connection lost — refresh this page (F5) and try again");
     }
@@ -1408,7 +1447,8 @@
   // Extended instructions shown on hover over the info icon.
   const EXTENDED_INSTRUCTIONS =
     "HIGHLIGHTS: Shift+G (small), Ctrl+Shift+G (key field / jagged), Shift+H (callout — text box + arrow, requires text)\n" +
-    "Shift+D flags an open dropdown: captures the viewport instantly (so the dropdown survives), then drag a box to crop just that region into its own file.\n\n" +
+    "Shift+D flags an open dropdown -- works even before Shift+1, with no visual change until the screenshot is safely taken, then drag a box to crop just that region into its own file.\n\n" +
+    "Escape cancels capture mode entirely with no output (only outside area-select/manual-draw/dropdown-crop, which have their own Escape).\n\n" +
     "DESCRIBE: Hover a highlight then Shift+J for title+notes. Bullets: start with '- ', Tab/Shift+Tab to indent.\n\n" +
     "NUMBERS: Shift+N toggles number mode, then 0-9 over a highlight to tag it. Drag the badge to reposition.\n\n" +
     "CONTEXT: Shift+C auto-captures a label+snippet from the hovered element.\n\n" +
@@ -1597,6 +1637,7 @@
           ["Shift+T", "text annotation"],
           ["Ctrl+Z", "undo last action"],
           ["Shift+1", "finish & capture"],
+          ["Escape", "cancel — no output"],
         ];
 
     // Clear main but keep defaults link
@@ -2288,19 +2329,29 @@
     const slug = slugify(captureName);
     const baseName = "capture-" + (slug ? slug + "-" : "") + ts;
 
-    downloadDataUrl(outCanvas.toDataURL("image/png"), baseName + ".png");
-    downloadDataUrl(fullPageCanvas.toDataURL("image/png"), baseName + "-full.png");
+    // While a session is recording, this capture becomes a step in the
+    // eventual zip export instead -- downloading the same three files
+    // individually here too would just be confusing duplicate clutter, so
+    // they're skipped in that case (session or no session, the capture
+    // itself and its highlights work exactly the same either way).
+    const sessionRecording = !!(currentSessionState && currentSessionState.status === "recording");
 
     const dropdownFiles = {}; // annotation.id -> filename, for notes cross-referencing
     annotations.forEach((a) => {
       if (!a.dropdownImage) return;
-      const fname = baseName + "-dropdown-H" + a.id + ".png";
-      downloadDataUrl(a.dropdownImage, fname);
-      dropdownFiles[a.id] = fname;
+      dropdownFiles[a.id] = baseName + "-dropdown-H" + a.id + ".png";
     });
 
     const notesText = buildNotesText(ts, pageContext, baseName, dropdownFiles);
-    downloadDataUrl("data:text/plain;charset=utf-8," + encodeURIComponent(notesText), baseName + ".txt");
+
+    if (!sessionRecording) {
+      downloadDataUrl(outCanvas.toDataURL("image/png"), baseName + ".png");
+      downloadDataUrl(fullPageCanvas.toDataURL("image/png"), baseName + "-full.png");
+      annotations.forEach((a) => {
+        if (a.dropdownImage) downloadDataUrl(a.dropdownImage, dropdownFiles[a.id]);
+      });
+      downloadDataUrl("data:text/plain;charset=utf-8," + encodeURIComponent(notesText), baseName + ".txt");
+    }
 
     addCaptureToSessionIfRecording({
       timestamp: Date.now(),
@@ -2316,7 +2367,7 @@
     });
 
     cleanUpAfterFinish();
-    toast("Screenshot + full-page + notes saved");
+    toast(sessionRecording ? "Step added to session — export from the toolbar popup when done" : "Screenshot + full-page + notes saved");
   }
 
   // Feeds a finished capture into the active session as a new step, if one
@@ -2362,6 +2413,14 @@
     captureName = "";
     hideBadge();
     unfreezePage();
+  }
+
+  // Escape while in capture mode (but not mid area-selection/manual-draw/
+  // dropdown-crop, which have their own Escape handling) -- discards
+  // everything marked so far and produces no output.
+  function cancelCaptureMode() {
+    cleanUpAfterFinish();
+    toast("Capture mode cancelled — nothing saved");
   }
 
   function drawSmallHighlight(ctx, x, y, w, h, scale, color) {
