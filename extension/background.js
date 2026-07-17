@@ -192,8 +192,29 @@ async function deleteStep(stepId) {
 // evicted between events; storage survives, in-memory state doesn't).
 getSession().then(updateBadgeForSession);
 
-chrome.commands.onCommand.addListener((command) => {
-  if (command === "toggle-session") toggleSession();
+// Toggling via the keyboard command happens with no popup open and no UI of
+// its own, so without this there's no way to tell it actually did anything
+// short of noticing the mic indicator. Best-effort: if the active tab has
+// our content script running, show its normal toast.
+async function notifyActiveTab(text) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.id) {
+      chrome.tabs.sendMessage(tab.id, { type: "SESSION_TOAST", text }, () => void chrome.runtime.lastError);
+    }
+  } catch (err) {
+    // No active tab, or no content script there (e.g. a chrome:// page) -- fine.
+  }
+}
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "toggle-session") return;
+  const session = await toggleSession();
+  if (session && session.status === "recording") {
+    notifyActiveTab("Slideshot session started — captures will be added as steps");
+  } else {
+    notifyActiveTab("Slideshot session stopped — open the toolbar popup to export");
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

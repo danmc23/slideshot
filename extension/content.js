@@ -156,6 +156,14 @@
   // --- hotkey handling ---
   window.addEventListener("keydown", handleKeydown, true);
 
+  // Session start/stop (Ctrl+Shift+E) is a background-only command with no
+  // UI of its own -- this is the only on-page confirmation that it fired.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "SESSION_TOAST") {
+      toast(msg.text);
+    }
+  });
+
   function isEditableActive() {
     const el = document.activeElement;
     if (!el) return false;
