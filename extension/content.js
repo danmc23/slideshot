@@ -22,6 +22,9 @@
 // Shift+N         -> toggle number mode (then press 0-9 over a highlight to tag it)
 // Shift+C         -> tag the hovered element as "additional context" (auto-captured, no typing)
 // Ctrl+Z          -> undo the last marking action (highlight, context tag, number, description/overview)
+// Alt (hold)      -> push-to-talk narration while a session is recording;
+//                    transcribed text is time-aligned to whichever step it
+//                    was held during, added to the .md/PDF export
 //
 // Design notes (see README for the full list):
 // - Hotkeys are ignored whenever any input/textarea/contenteditable is focused
@@ -204,6 +207,45 @@
     }
   });
 
+  // --- push-to-talk narration: hold Alt while a session is recording ---
+  let pttHeld = false;
+
+  function isSessionRecording() {
+    return !!(currentSessionState && currentSessionState.status === "recording");
+  }
+
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Alt" || pttHeld || !isSessionRecording()) return;
+      pttHeld = true;
+      e.preventDefault();
+      chrome.runtime.sendMessage({ type: "PTT_START" }, () => void chrome.runtime.lastError);
+      toast("🎙️ Recording narration…");
+    },
+    true
+  );
+
+  window.addEventListener(
+    "keyup",
+    (e) => {
+      if (e.key !== "Alt" || !pttHeld) return;
+      pttHeld = false;
+      chrome.runtime.sendMessage({ type: "PTT_STOP" }, () => void chrome.runtime.lastError);
+      toast("Narration paused");
+    },
+    true
+  );
+
+  // Alt+Tabbing away (or any focus loss) never delivers the keyup for Alt
+  // to this page -- without this, narration would keep recording
+  // indefinitely until the user comes back and taps Alt again.
+  window.addEventListener("blur", () => {
+    if (!pttHeld) return;
+    pttHeld = false;
+    chrome.runtime.sendMessage({ type: "PTT_STOP" }, () => void chrome.runtime.lastError);
+  });
+
   // =========================================================================
   // On-page session panel: a collapsible floating panel (shown whenever a
   // session exists) with status, the step list, and Start/Stop/Discard plus
@@ -354,7 +396,9 @@
 
     const hint = document.createElement("div");
     hint.className = "hc-session-hint";
-    hint.textContent = recording ? "Stop the session, then click the toolbar icon to export." : "Click the Slideshot toolbar icon to export.";
+    hint.textContent = recording
+      ? "Hold Alt to narrate a step. Stop the session, then click the toolbar icon to export."
+      : "Click the Slideshot toolbar icon to export.";
     body.appendChild(hint);
 
     sessionPanelEl.appendChild(body);
@@ -1526,6 +1570,7 @@
     "Edges snap to page elements (hold Ctrl to override). Y or Enter to accept.\n\n" +
     "COLORS: Use the left column to change highlight color, right column for badge/number color.\n" +
     "Click the triangle icon for a safety-stripe (yellow/black hazard) highlight mode.\n\n" +
+    "NARRATION: Hold Alt to talk while a session (Ctrl+Shift+E) is recording -- transcribed and time-aligned to a step in the export.\n\n" +
     "OUTPUT: Cropped PNG + full-page PNG + .txt notes file, all sharing one base name.";
 
   function buildBadgeStructure() {

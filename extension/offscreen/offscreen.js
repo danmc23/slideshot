@@ -1,5 +1,5 @@
 // offscreen.js
-// Runs continuous Web Speech API speech-to-text in a hidden offscreen
+// Runs push-to-talk Web Speech API speech-to-text in a hidden offscreen
 // document -- the background service worker can't hold a persistent mic
 // stream or long-lived recognition session. No raw audio is ever stored;
 // only recognized transcript text chunks (with their timestamps) are sent
@@ -31,15 +31,21 @@ function createRecognition() {
     }
   };
 
+  // "no-speech" fires routinely on every pause and "aborted" fires whenever
+  // we deliberately call .stop() on key-up -- neither is an actual problem,
+  // so only genuinely actionable errors (blocked mic, network/firewall,
+  // etc.) get surfaced to the user.
   rec.onerror = (event) => {
     if (event.error === "not-allowed" || event.error === "service-not-allowed") {
       active = false;
     }
+    if (event.error !== "no-speech" && event.error !== "aborted") {
+      chrome.runtime.sendMessage({ type: "STT_ERROR", error: event.error });
+    }
   };
 
   // Web Speech recognition self-terminates after a period of silence (or
-  // internal limits); restart it automatically while the session is still
-  // supposed to be recording.
+  // internal limits); restart it automatically while still held down.
   rec.onend = () => {
     if (!active) return;
     setTimeout(() => {
@@ -60,7 +66,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     active = true;
     lastChunkEnd = msg.startedAt || Date.now();
     recognition = createRecognition();
-    if (!recognition) return;
+    if (!recognition) {
+      chrome.runtime.sendMessage({ type: "STT_ERROR", error: "unsupported" });
+      return;
+    }
     try {
       recognition.start();
     } catch (err) {
@@ -77,3 +86,9 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   }
 });
+
+// Lets background.js know this document's listener is actually attached
+// before it sends the first START_STT -- chrome.offscreen.createDocument()
+// resolving doesn't guarantee this script has run yet, and a message sent
+// into that gap is silently dropped with no error anywhere.
+chrome.runtime.sendMessage({ type: "OFFSCREEN_READY" });

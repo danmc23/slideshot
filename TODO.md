@@ -44,6 +44,24 @@
 
 ## Recently done
 
+- **Voice narration is now push-to-talk (hold Alt), and a likely root
+  cause of "nothing is ever transcribed" is fixed.** Sessions no longer
+  auto-start continuous STT; holding Alt while a session is recording
+  starts recognition for as long as it's held (PTT_START/PTT_STOP),
+  auto-stopping on window blur too (e.g. Alt-tabbing away never delivers a
+  keyup to the page, which would otherwise leave it recording
+  indefinitely). Separately: `chrome.offscreen.createDocument()` resolving
+  doesn't guarantee the offscreen document's own script has attached its
+  message listener yet -- the very first START_STT sent right after
+  creating it could be silently dropped with zero error, which is a very
+  plausible explanation for why narration wasn't working at all. Fixed
+  with an OFFSCREEN_READY handshake (with a 2s timeout safety net).
+  Actionable speech-recognition errors (network/firewall, mic access,
+  unsupported) are now also relayed to an on-page toast instead of failing
+  silently -- "no-speech" and "aborted" are filtered out since those fire
+  routinely during normal use. Narration-to-step association was already
+  handled by the existing time-window alignment in `computeNarrationForSteps()`
+  and needed no changes for push-to-talk.
 - **Dropdown crop stays unmodified; PDF no longer stretches it to page
   width; wide screenshots get a landscape page instead of being squeezed.**
   Removed the baked-on border from the small dropdown crop image (kept

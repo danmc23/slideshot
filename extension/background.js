@@ -10,15 +10,36 @@ function imgKey(stepId, suffix) {
   return "slideshot_img:" + stepId + (suffix ? ":" + suffix : "");
 }
 
-// --- offscreen document (hosts Web Speech API STT while a session records) ---
+// --- offscreen document (hosts Web Speech API STT, push-to-talk) ---
+
+// chrome.offscreen.createDocument() resolving does NOT guarantee the
+// document's own script has run and attached its message listener yet --
+// a message sent into that gap is silently dropped with no error anywhere.
+// The offscreen doc sends OFFSCREEN_READY the moment its listener is live;
+// ensureOffscreenDocument() waits for that (with a timeout as a safety net
+// in case something's wrong) before anything tries to talk to it.
+let offscreenReadyResolve = null;
+let offscreenReadyPromise = null;
+
+function waitForOffscreenReady() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2000); // don't hang forever if READY never arrives
+    offscreenReadyResolve = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+}
 
 async function ensureOffscreenDocument() {
   if (await chrome.offscreen.hasDocument()) return;
+  offscreenReadyPromise = waitForOffscreenReady();
   await chrome.offscreen.createDocument({
     url: "offscreen/offscreen.html",
     reasons: ["USER_MEDIA"],
-    justification: "Continuous speech-to-text narration while a capture session is recording.",
+    justification: "Push-to-talk speech-to-text narration while a capture session is recording.",
   });
+  await offscreenReadyPromise;
 }
 
 async function closeOffscreenDocument() {
@@ -33,6 +54,24 @@ async function ensureMicPermissionRequested() {
   if (res.slideshot_mic_permission_requested) return;
   await new Promise((resolve) => chrome.storage.local.set({ slideshot_mic_permission_requested: true }, resolve));
   chrome.tabs.create({ url: chrome.runtime.getURL("permission/permission.html") });
+}
+
+// Push-to-talk: starts/stops actual recognition on each Alt press/release,
+// while the offscreen document itself stays alive for the whole session.
+async function startPushToTalk(startedAt) {
+  const session = await getSession();
+  if (!session || session.status !== "recording") return;
+  await ensureMicPermissionRequested();
+  await ensureOffscreenDocument();
+  chrome.runtime.sendMessage({ type: "START_STT", startedAt }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+function stopPushToTalk() {
+  chrome.runtime.sendMessage({ type: "STOP_STT" }, () => {
+    void chrome.runtime.lastError;
+  });
 }
 
 async function handleTranscriptChunk(text, tStart, tEnd) {
@@ -90,11 +129,8 @@ async function startSession() {
     transcript: [],
   };
   await setSession(session);
-  await ensureMicPermissionRequested();
-  await ensureOffscreenDocument();
-  chrome.runtime.sendMessage({ type: "START_STT", startedAt: session.startedAt }, () => {
-    void chrome.runtime.lastError; // no offscreen doc yet on first-ever run -- harmless
-  });
+  // Narration itself is push-to-talk (hold Alt) -- see startPushToTalk()/
+  // stopPushToTalk() -- rather than starting automatically here.
   return session;
 }
 
@@ -104,9 +140,8 @@ async function stopSession() {
   session.status = "stopped";
   session.endedAt = Date.now();
   await setSession(session);
-  chrome.runtime.sendMessage({ type: "STOP_STT" }, () => {
-    void chrome.runtime.lastError;
-  });
+  // Safety net in case Alt was still held down when the session stopped.
+  stopPushToTalk();
   await closeOffscreenDocument();
   return session;
 }
@@ -281,5 +316,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "TRANSCRIPT_CHUNK") {
     handleTranscriptChunk(msg.text, msg.tStart, msg.tEnd);
     return; // fire-and-forget from the offscreen doc, no response needed
+  }
+
+  if (msg && msg.type === "PTT_START") {
+    startPushToTalk(Date.now()).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg && msg.type === "PTT_STOP") {
+    stopPushToTalk();
+    return;
+  }
+
+  if (msg && msg.type === "OFFSCREEN_READY") {
+    if (offscreenReadyResolve) {
+      offscreenReadyResolve();
+      offscreenReadyResolve = null;
+    }
+    return;
+  }
+
+  if (msg && msg.type === "STT_ERROR") {
+    notifyActiveTab(
+      "Voice narration error (" +
+        msg.error +
+        (msg.error === "network" ? " -- check that your network/firewall allows Chrome's speech recognition service" : "") +
+        ")"
+    );
+    return;
   }
 });
